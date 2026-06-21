@@ -1,0 +1,193 @@
+import sqlite3
+import os
+from datetime import datetime
+from typing import Optional
+
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trading_bot.db")
+
+
+def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_db(db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS candles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            open_time INTEGER NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            close_time INTEGER NOT NULL,
+            quote_volume REAL NOT NULL,
+            num_trades INTEGER NOT NULL,
+            UNIQUE(symbol, interval, open_time)
+        );
+
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            price REAL NOT NULL,
+            quantity REAL NOT NULL,
+            strategy_name TEXT NOT NULL,
+            reason TEXT,
+            order_id TEXT,
+            status TEXT DEFAULT 'FILLED',
+            pnl REAL DEFAULT 0.0,
+            fee REAL DEFAULT 0.0,
+            leverage INTEGER DEFAULT 1
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_candles_symbol_interval
+            ON candles(symbol, interval, open_time);
+        CREATE INDEX IF NOT EXISTS idx_trades_timestamp
+            ON trades(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_trades_strategy
+            ON trades(strategy_name);
+        CREATE INDEX IF NOT EXISTS idx_trades_symbol
+            ON trades(symbol);
+    """)
+    _migrate_trades_table(conn)
+    conn.commit()
+    conn.close()
+
+
+def _migrate_trades_table(conn: sqlite3.Connection):
+    cursor = conn.execute("PRAGMA table_info(trades)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "fee" not in columns:
+        conn.execute("ALTER TABLE trades ADD COLUMN fee REAL DEFAULT 0.0")
+    if "leverage" not in columns:
+        conn.execute("ALTER TABLE trades ADD COLUMN leverage INTEGER DEFAULT 1")
+
+
+def insert_candle(candle: dict, db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    conn.execute("""
+        INSERT OR REPLACE INTO candles
+        (symbol, interval, open_time, open, high, low, close, volume, close_time, quote_volume, num_trades)
+        VALUES (:symbol, :interval, :open_time, :open, :high, :low, :close, :volume, :close_time, :quote_volume, :num_trades)
+    """, candle)
+    conn.commit()
+    conn.close()
+
+
+def insert_candles(candles: list[dict], db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    conn.executemany("""
+        INSERT OR REPLACE INTO candles
+        (symbol, interval, open_time, open, high, low, close, volume, close_time, quote_volume, num_trades)
+        VALUES (:symbol, :interval, :open_time, :open, :high, :low, :close, :volume, :close_time, :quote_volume, :num_trades)
+    """, candles)
+    conn.commit()
+    conn.close()
+
+
+def get_candles(symbol: str, interval: str, limit: int = 500,
+                start_time: Optional[int] = None, end_time: Optional[int] = None,
+                db_path: str = DB_PATH) -> list[dict]:
+    conn = get_connection(db_path)
+    query = "SELECT * FROM candles WHERE symbol = ? AND interval = ?"
+    params: list = [symbol, interval]
+
+    if start_time is not None:
+        query += " AND open_time >= ?"
+        params.append(start_time)
+    if end_time is not None:
+        query += " AND open_time <= ?"
+        params.append(end_time)
+
+    query += " ORDER BY open_time ASC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def insert_trade(trade: dict, db_path: str = DB_PATH):
+    trade.setdefault("fee", 0.0)
+    trade.setdefault("leverage", 1)
+    conn = get_connection(db_path)
+    conn.execute("""
+        INSERT INTO trades
+        (timestamp, symbol, side, price, quantity, strategy_name, reason, order_id, status, pnl, fee, leverage)
+        VALUES (:timestamp, :symbol, :side, :price, :quantity, :strategy_name, :reason, :order_id, :status, :pnl, :fee, :leverage)
+    """, trade)
+    conn.commit()
+    conn.close()
+
+
+def get_trades(strategy_name: Optional[str] = None, symbol: Optional[str] = None,
+               limit: int = 100, db_path: str = DB_PATH) -> list[dict]:
+    conn = get_connection(db_path)
+    query = "SELECT * FROM trades WHERE 1=1"
+    params: list = []
+
+    if strategy_name:
+        query += " AND strategy_name = ?"
+        params.append(strategy_name)
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol)
+
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_strategy_pnl(db_path: str = DB_PATH) -> dict[str, dict]:
+    conn = get_connection(db_path)
+    rows = conn.execute("""
+        SELECT strategy_name,
+               COUNT(*) as num_trades,
+               COALESCE(SUM(pnl), 0) as total_pnl,
+               COALESCE(SUM(fee), 0) as total_fees,
+               COALESCE(SUM(pnl) - SUM(fee), 0) as net_pnl
+        FROM trades
+        GROUP BY strategy_name
+    """).fetchall()
+    conn.close()
+    return {row["strategy_name"]: dict(row) for row in rows}
+
+
+def clear_trades(db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    conn.execute("DELETE FROM trades")
+    conn.commit()
+    conn.close()
+
+
+def get_portfolio_value(initial_capital: float = 1000.0, db_path: str = DB_PATH) -> float:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT COALESCE(SUM(pnl) - SUM(fee), 0) as net_pnl FROM trades"
+    ).fetchone()
+    conn.close()
+    return initial_capital + row["net_pnl"]
+
+
+def get_daily_pnl(date: Optional[str] = None, db_path: str = DB_PATH) -> float:
+    if date is None:
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT COALESCE(SUM(pnl) - SUM(fee), 0) as daily_pnl FROM trades WHERE timestamp LIKE ?",
+        (f"{date}%",)
+    ).fetchone()
+    conn.close()
+    return row["daily_pnl"]

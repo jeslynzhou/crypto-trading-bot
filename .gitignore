@@ -1,0 +1,8 @@
+.env
+.env.example
+*.db
+bot.log
+.bot_pid
+__pycache__/
+*.pyc
+.DS_Store
