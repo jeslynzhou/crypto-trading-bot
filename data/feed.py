@@ -11,7 +11,7 @@ from data.storage import insert_candle, insert_candles
 logger = logging.getLogger(__name__)
 
 BINANCE_WS_URL = "wss://stream.binance.com:9443/ws"
-BINANCE_REST_URL = "https://api.binance.com/api/v3"
+BINANCE_REST_URL = "https://data-api.binance.vision/api/v3"
 
 
 class DataFeed:

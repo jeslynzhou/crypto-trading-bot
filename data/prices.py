@@ -5,7 +5,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-BINANCE_REST = "https://api.binance.com/api/v3"
+BINANCE_REST = "https://data-api.binance.vision/api/v3"
 HYPERLIQUID_API = "https://api.hyperliquid.xyz/info"
 
 
