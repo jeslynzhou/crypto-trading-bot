@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 from config import SYMBOLS, STRATEGIES, STRATEGY_NAMES, LEVERAGE_OPTIONS, TRADING_FEE_RATE, INITIAL_CAPITAL
 from data.storage import get_trades, get_candles, get_portfolio_value, clear_trades, init_db
 from data.feed import DataFeed
-from data.prices import get_binance_24h_stats
+from data.prices import get_prices, get_24h_stats
 from strategy.loader import get_all_strategy_names, build_strategy
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -35,8 +35,8 @@ def fetch_candles(symbol: str, interval: str, limit: int = 500) -> list[dict]:
 
 
 @st.cache_data(ttl=10)
-def cached_24h_stats(symbols: tuple) -> dict:
-    return get_binance_24h_stats(list(symbols))
+def cached_prices(symbols: tuple) -> dict:
+    return get_24h_stats(list(symbols))
 
 
 @st.cache_data(ttl=60)
@@ -248,11 +248,11 @@ if active_tab == "Markets":
     col_sym, col_tf = st.columns([3, 1])
     with col_sym:
         selected = st.selectbox("Symbol", SYMBOLS,
-                                format_func=lambda s: s.replace("USDT", "/USDT"))
+                                format_func=lambda s: f"{s}/USD")
     with col_tf:
         timeframe = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h"])
 
-    stats = cached_24h_stats(tuple(SYMBOLS))
+    stats = cached_prices(tuple(SYMBOLS))
     if stats:
         per_row = 6
         for row_start in range(0, len(SYMBOLS), per_row):
@@ -261,7 +261,7 @@ if active_tab == "Markets":
             for i, sym in enumerate(row_syms):
                 s = stats.get(sym, {})
                 with mcols[i]:
-                    label = sym.replace("USDT", "")
+                    label = sym
                     price = s.get("price", 0)
                     change = s.get("change_pct", 0)
                     st.metric(label,
@@ -318,7 +318,7 @@ if active_tab == "Markets":
             template="plotly_dark", height=600,
             xaxis_rangeslider_visible=False, showlegend=False,
             margin=dict(l=0, r=0, t=40, b=0),
-            title=f"{selected.replace('USDT', '/USDT')} — {timeframe} — {price_fmt}",
+            title=f"{selected} — {timeframe} — {price_fmt}",
             yaxis=dict(title="Price", side="right"),
             dragmode="zoom",
         )
@@ -363,7 +363,7 @@ if active_tab == "Trading":
     ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns(4)
     with ctrl_col1:
         bot_symbol = st.selectbox("Coin", SYMBOLS, key="bot_sym",
-                                  format_func=lambda s: s.replace("USDT", "/USDT"))
+                                  format_func=lambda s: f"{s}/USD")
     with ctrl_col2:
         bot_strats = st.multiselect("Strategies", all_strat_names,
                                     default=all_strat_names[:2], key="bot_strat")
@@ -377,7 +377,7 @@ if active_tab == "Trading":
         st.caption(f"Mode: **LIVE (Hyperliquid)** — Effective fee: {eff_fee:.2f}% per trade (0.035% x {bot_leverage}x)")
     else:
         eff_fee = TRADING_FEE_RATE * bot_leverage * 100
-        st.caption(f"Mode: **Paper (Binance Testnet)** — Effective fee: {eff_fee:.1f}% per trade ({TRADING_FEE_RATE*100:.1f}% x {bot_leverage}x)")
+        st.caption(f"Mode: **Paper** — Effective fee: {eff_fee:.2f}% per trade ({TRADING_FEE_RATE*100:.3f}% x {bot_leverage}x)")
 
     can_start = bot_mode == "Paper" or (bot_mode == "Live" and hl_key and hl_address)
 
@@ -447,7 +447,7 @@ if active_tab == "Trading":
         open_positions = get_open_positions(user_key)
         unrealized = 0.0
         if open_positions and running:
-            price_stats = cached_24h_stats(tuple(SYMBOLS))
+            price_stats = cached_prices(tuple(SYMBOLS))
             current_prices = {s: d.get("price", 0) for s, d in price_stats.items()} if price_stats else {}
             unrealized = calc_unrealized_pnl(open_positions, current_prices)
 
@@ -471,7 +471,7 @@ if active_tab == "Trading":
                     else:
                         pos_pnl = (pos["entry_price"] - cur_price) * pos["quantity"]
                     pos_data.append({
-                        "Symbol": sym.replace("USDT", "/USDT"),
+                        "Symbol": sym,
                         "Strategy": pos["strategy"],
                         "Side": pos["side"],
                         "Entry": f"${pos['entry_price']:,.2f}",
@@ -558,7 +558,7 @@ if active_tab == "Trading":
             price_fmt = f"${latest_price:,.2f}" if latest_price >= 1 else f"${latest_price:.4f}"
             fig_price.update_layout(
                 template="plotly_dark", height=500,
-                title=dict(text=f"{bot_symbol.replace('USDT', '/USDT')} — {chart_interval} — {price_fmt}",
+                title=dict(text=f"{bot_symbol} — {chart_interval} — {price_fmt}",
                            y=0.97, x=0.5, xanchor="center"),
                 xaxis_rangeslider_visible=False, showlegend=True,
                 legend=dict(orientation="h", y=1.15, x=0.5, xanchor="center"),
@@ -649,7 +649,7 @@ if active_tab == "Backtest":
 
     with col_left:
         bt_symbol = st.selectbox("Symbol", SYMBOLS, key="bt_sym",
-                                 format_func=lambda s: s.replace("USDT", "/USDT"))
+                                 format_func=lambda s: f"{s}/USD")
         bt_interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h"], key="bt_int")
         bt_leverage = st.selectbox("Leverage", LEVERAGE_OPTIONS, key="bt_lev")
         bt_strategies = st.multiselect("Strategies", all_strat_names,
@@ -700,7 +700,7 @@ if active_tab == "Backtest":
                     fig_cmp.add_trace(go.Scatter(y=res.equity_curve, mode="lines",
                                                   name=name, line=dict(width=2)))
             fig_cmp.update_layout(
-                title=f"{bt_symbol.replace('USDT','/USDT')} {bt_interval} ({bt_leverage}x lev, {TRADING_FEE_RATE*bt_leverage*100:.1f}% fee)",
+                title=f"{bt_symbol}/USD {bt_interval} ({bt_leverage}x lev, {TRADING_FEE_RATE*bt_leverage*100:.2f}% fee)",
                 xaxis_title="Candle #", yaxis_title="Portfolio ($)",
                 template="plotly_dark", height=400)
             st.plotly_chart(fig_cmp, use_container_width=True)

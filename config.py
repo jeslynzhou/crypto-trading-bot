@@ -1,27 +1,25 @@
 SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
-    "ADAUSDT",
-    "AVAXUSDT",
-    "DOTUSDT",
-    "POLUSDT",
-    "NEARUSDT",
-    "SUIUSDT",
-    "ARBUSDT",
-    "LTCUSDT",
-    "INJUSDT",
-    "RENDERUSDT",
-    "LINKUSDT",
-    "DASHUSDT",
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB",
+    "XRP",
+    "DOGE",
+    "ADA",
+    "AVAX",
+    "DOT",
+    "NEAR",
+    "SUI",
+    "ARB",
+    "LTC",
+    "INJ",
+    "RENDER",
+    "LINK",
+    "HYPE",
 ]
 
-HYPERLIQUID_ASSETS = [s.replace("USDT", "") for s in SYMBOLS]
-
-TRADING_FEE_RATE = 0.001
+TRADING_FEE_RATE = 0.00035
+HYPERLIQUID_FEE_RATE = 0.00035
 
 LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20]
 DEFAULT_LEVERAGE = 1

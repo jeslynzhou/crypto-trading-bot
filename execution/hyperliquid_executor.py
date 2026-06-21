@@ -19,7 +19,7 @@ class HyperliquidExecutor:
     def __init__(self, private_key: str, symbol: str = "BTCUSDT", leverage: int = 1,
                  user_id: str = "default"):
         self.symbol = symbol
-        self.coin = symbol.replace("USDT", "")
+        self.coin = symbol
         self.leverage = leverage
         self.fee_rate = HYPERLIQUID_FEE_RATE
         self.user_id = user_id

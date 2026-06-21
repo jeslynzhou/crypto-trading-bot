@@ -1,8 +1,8 @@
-# Crypto Trading Bot
+# Velox
 
-A cryptocurrency trading bot with a Streamlit dashboard for live trading, backtesting, and custom strategy development. Connects to the Binance Testnet for paper trading.
+A cryptocurrency trading bot with a Streamlit dashboard for paper trading, live trading (via Hyperliquid), backtesting, and custom strategy development. All market data powered by Hyperliquid API.
 
-## Setup
+## Quick Start
 
 ### 1. Install dependencies
 
@@ -10,37 +10,33 @@ A cryptocurrency trading bot with a Streamlit dashboard for live trading, backte
 pip install -r requirements.txt
 ```
 
-### 2. Get Binance Testnet API keys
-
-1. Go to https://testnet.binance.vision/
-2. Log in with your GitHub account
-3. Click **Generate HMAC_SHA256 Key**
-4. Copy the API Key and Secret Key
-
-### 3. Configure `.env`
-
-Create a `.env` file in the project root:
-
-```
-BINANCE_TESTNET_API_KEY=your_api_key_here
-BINANCE_TESTNET_SECRET_KEY=your_secret_key_here
-```
-
-### 4. Launch the dashboard
+### 2. Launch the dashboard
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-The dashboard opens at `http://localhost:8501`.
+The dashboard opens at `http://localhost:8501`. Register an account and you're ready to go.
+
+**No API keys needed for paper trading** — it works out of the box.
+
+### 3. (Optional) Enable live trading
+
+To trade with real money on Hyperliquid, add your wallet private key to `.env`:
+
+```
+HL_PRIVATE_KEY=0x_your_private_key_here
+```
+
+Then enter your **wallet address** (public) in the Trading tab to view your portfolio. The private key is only used when the bot places orders — it never appears in the UI.
 
 ---
 
-## Dashboard Tabs
+## Dashboard
 
 ### Markets
 
-Browse live prices for all 18 supported coins.
+Browse live prices for all 17 supported coins.
 
 - **Symbol / Timeframe** — pick any coin and candle interval (1m, 5m, 15m, 1h)
 - **Chart Type** — toggle between Candlestick and Line view
@@ -50,23 +46,20 @@ Browse live prices for all 18 supported coins.
 
 ### Trading
 
-Control the live bot and monitor performance.
+Control the bot and monitor performance.
 
-**Bot Controls:**
+1. Choose **Paper** or **Live** mode
+2. Select a **Coin**, one or more **Strategies**, a **Leverage** level, and an **Interval**
+3. Click **Start Bot** to begin trading
+4. Click **Stop Bot** to stop
+5. Click **Reset Portfolio** to wipe all trades and reset capital to $1,000
 
-1. Choose **Paper** (Binance Testnet) or **Live** (Hyperliquid) mode
-2. For Live mode, enter your Hyperliquid wallet private key
-3. Select a **Coin**, one or more **Strategies**, a **Leverage** level, and an **Interval**
-4. Click **Start Bot** to begin trading
-5. Click **Stop Bot** to stop
-6. Click **Reset Portfolio** to wipe all trades and reset capital to $1,000
+| Mode | How it works | Fees | Real Money |
+|------|-------------|------|------------|
+| Paper | Simulated trades using live Hyperliquid prices | 0.035% | No |
+| Live | Real orders on Hyperliquid | 0.035% | Yes |
 
-| Mode | Exchange | Currency | Fees | Real Money |
-|------|----------|----------|------|------------|
-| Paper | Binance Testnet | USDT | 0.1% | No |
-| Live | Hyperliquid | USDC | 0.035% | Yes |
-
-**Sections below the controls:**
+**Dashboard sections:**
 
 | Section | What it shows |
 |---------|--------------|
@@ -86,21 +79,17 @@ Test strategies on historical data before risking capital.
 3. Expand each strategy to **customize parameters** (e.g. RSI period, MACD fast/slow)
 4. Click **Run Backtest**
 
-Results include:
-- Equity curve comparison chart
-- Summary table with Final Capital, Return, Sharpe Ratio, Max Drawdown, Win Rate, and Fees
-- Single-strategy equity curve (when only one strategy is selected)
+Results include equity curve comparison, summary table (Return, Sharpe, Max Drawdown, Win Rate), and per-strategy breakdown.
 
 ### Strategy Editor
 
-Write custom strategies in Python without restarting the bot.
+Write custom strategies in Python.
 
-1. Enter a **filename** for your strategy
-2. Edit the code in the text area (a template is loaded by default)
-3. Click **Save Strategy** — syntax is checked before saving
-4. Your strategy immediately appears in the Trading and Backtest strategy selectors
-
-To edit an existing custom strategy, select it from the **Load existing** dropdown.
+- Click **+ New** to start from a template
+- Click an existing strategy to edit it
+- Click **x** to delete
+- Saved strategies auto-appear in Trading and Backtest selectors
+- Each user's strategies are isolated — other users can't see yours
 
 ---
 
@@ -117,7 +106,7 @@ To edit an existing custom strategy, select it from the **Load existing** dropdo
 
 ## Writing a Custom Strategy
 
-Create a `.py` file in `strategy/custom/` (or use the Strategy Editor tab). Your class must:
+Create a `.py` file via the Strategy Editor tab. Your class must:
 
 - Inherit from `BaseStrategy`
 - Have a class name ending with `Strategy`
@@ -173,30 +162,33 @@ class MyCustomStrategy(BaseStrategy):
 ## Project Structure
 
 ```
-crypto_trading_bot/
+velox/
 ├── dashboard/
-│   └── app.py              # Streamlit dashboard
+│   └── app.py                  # Streamlit dashboard
 ├── data/
-│   ├── feed.py             # Binance WebSocket + REST data feeds
-│   ├── storage.py          # SQLite database (candles + trades)
-│   ├── replay.py           # Historical data replay for backtesting
-│   └── prices.py           # 24h price stats
+│   ├── feed.py                 # Hyperliquid candle data feed
+│   ├── storage.py              # SQLite database (candles + trades)
+│   ├── replay.py               # Historical data replay for backtesting
+│   └── prices.py               # Live prices from Hyperliquid
 ├── execution/
-│   ├── executor.py         # Binance Testnet order execution
-│   └── risk.py             # Position sizing, stop-loss, drawdown
+│   ├── paper_executor.py       # Paper trading (simulated)
+│   ├── hyperliquid_executor.py # Live trading on Hyperliquid
+│   ├── executor.py             # Binance executor (legacy)
+│   └── risk.py                 # Position sizing, stop-loss, drawdown
 ├── strategy/
-│   ├── base.py             # BaseStrategy + Signal/TradeSignal
-│   ├── macd.py             # MACD strategy
-│   ├── rsi.py              # RSI strategy
-│   ├── mean_reversion.py   # Bollinger Bands strategy
-│   ├── supertrend.py       # Supertrend strategy
-│   ├── loader.py           # Strategy discovery + factory
-│   └── custom/             # Drop custom strategies here
-│       └── _template.py    # Template for new strategies
-├── backtest.py             # Backtesting engine
-├── bot_runner.py           # Live bot (runs as subprocess)
-├── config.py               # Symbols, leverage, fees, strategy params
-├── .env                    # API keys (not committed)
+│   ├── base.py                 # BaseStrategy + Signal/TradeSignal
+│   ├── macd.py                 # MACD strategy
+│   ├── rsi.py                  # RSI strategy
+│   ├── mean_reversion.py       # Bollinger Bands strategy
+│   ├── supertrend.py           # Supertrend strategy
+│   ├── loader.py               # Strategy discovery + factory
+│   └── custom/                 # Per-user custom strategies
+│       └── _template.py        # Template for new strategies
+├── backtest.py                 # Backtesting engine
+├── bot_runner.py               # Bot process (runs as subprocess)
+├── config.py                   # Symbols, leverage, fees, strategy params
+├── auth_config.yaml            # User credentials (auto-created, not committed)
+├── .env                        # Private key for live trading (not committed)
 └── requirements.txt
 ```
 
@@ -208,17 +200,29 @@ Edit `config.py` to change:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `SYMBOLS` | BTC, ETH, SOL, BNB, XRP, DOGE, ADA, AVAX, DOT, POL, NEAR, SUI, ARB, LTC, INJ, RENDER, LINK, DASH | Supported trading pairs |
-| `INITIAL_CAPITAL` | `1000.0` | Starting portfolio value |
-| `TRADING_FEE_RATE` | `0.001` (0.1%) | Fee per trade |
+| `SYMBOLS` | BTC, ETH, SOL, BNB, XRP, DOGE, ADA, AVAX, DOT, NEAR, SUI, ARB, LTC, INJ, RENDER, LINK, HYPE | Supported coins |
+| `INITIAL_CAPITAL` | `1000.0` | Starting portfolio value (paper mode) |
+| `TRADING_FEE_RATE` | `0.00035` (0.035%) | Fee per trade |
 | `LEVERAGE_OPTIONS` | 1, 2, 3, 5, 10, 20 | Available leverage levels |
+
+---
+
+## User Isolation
+
+Each registered user gets:
+- Their own trade history and portfolio
+- Their own custom strategies folder
+- Their own bot instance and log file
+- Paper and Live modes are fully separate
 
 ---
 
 ## Tips
 
+- **No setup needed for paper trading** — just install deps and run. No API keys required.
 - **Warmup time**: strategies need historical candles before generating signals. MACD needs ~35 candles, so on a 5m interval expect ~3 hours before the first trade.
 - **Flat markets**: if the price isn't moving, strategies won't signal — that's correct behavior.
-- **Use Backtest first**: always backtest a strategy before running it live to understand its behavior.
-- **Monitor the Bot Log**: check the Trading tab's Bot Log section or run `tail -f bot.log` in your terminal to see real-time signals and orders.
+- **Use Backtest first**: always backtest a strategy before running it live.
+- **Monitor the Bot Log**: check the Trading tab's Bot Log section to see real-time signals and orders.
 - **Reset before switching**: click **Reset Portfolio** before changing strategies or coins to start fresh.
+- **Live trading security**: your private key is stored in `.env` (never committed to git) and passed to the bot via environment variable (never visible in process listings or the UI). Only your public wallet address is entered in the dashboard.

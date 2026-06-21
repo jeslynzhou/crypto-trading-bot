@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class ReplayFeed:
-    def __init__(self, symbol: str = "BTCUSDT", interval: str = "1m",
+    def __init__(self, symbol: str = "BTC", interval: str = "1m",
                  start_time: Optional[int] = None, end_time: Optional[int] = None,
                  speed: float = 0.0):
         self.symbol = symbol.upper()

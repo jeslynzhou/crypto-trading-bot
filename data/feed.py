@@ -1,27 +1,31 @@
 import asyncio
-import json
 import logging
+import time
 from typing import Callable, Optional
 
-import requests
-import websockets
+from hyperliquid.info import Info
+from hyperliquid.utils import constants
 
 from data.storage import insert_candle, insert_candles
 
 logger = logging.getLogger(__name__)
 
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws"
-BINANCE_REST_URL = "https://data-api.binance.vision/api/v3"
+INTERVAL_MS = {
+    "1m": 60_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "1h": 3_600_000,
+}
 
 
 class DataFeed:
-    def __init__(self, symbol: str = "BTCUSDT", interval: str = "1m", mode: str = "live"):
-        self.symbol = symbol.upper()
+    def __init__(self, symbol: str = "BTC", interval: str = "1m", mode: str = "live"):
+        self.symbol = symbol
         self.interval = interval
         self.mode = mode
         self._callbacks: list[Callable] = []
         self._running = False
-        self._ws = None
+        self._info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
     def on_candle(self, callback: Callable):
         self._callbacks.append(callback)
@@ -32,136 +36,83 @@ class DataFeed:
 
     def fetch_historical(self, limit: int = 500, start_time: Optional[int] = None,
                          end_time: Optional[int] = None) -> list[dict]:
-        params = {
-            "symbol": self.symbol,
-            "interval": self.interval,
-            "limit": limit,
-        }
-        if start_time:
-            params["startTime"] = start_time
-        if end_time:
-            params["endTime"] = end_time
+        now_ms = int(time.time() * 1000)
+        interval_ms = INTERVAL_MS.get(self.interval, 60_000)
 
-        resp = requests.get(f"{BINANCE_REST_URL}/klines", params=params, timeout=10)
-        resp.raise_for_status()
-        raw = resp.json()
+        if end_time is None:
+            end_time = now_ms
+        if start_time is None:
+            start_time = end_time - (limit * interval_ms)
+
+        try:
+            raw = self._info.candles_snapshot(self.symbol, self.interval, start_time, end_time)
+        except Exception as e:
+            logger.error("Failed to fetch candles for %s: %s", self.symbol, e)
+            return []
 
         candles = []
         for k in raw:
             candle = {
                 "symbol": self.symbol,
                 "interval": self.interval,
-                "open_time": k[0],
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-                "close_time": k[6],
-                "quote_volume": float(k[7]),
-                "num_trades": int(k[8]),
+                "open_time": k["t"],
+                "open": float(k["o"]),
+                "high": float(k["h"]),
+                "low": float(k["l"]),
+                "close": float(k["c"]),
+                "volume": float(k["v"]),
+                "close_time": k["t"] + interval_ms - 1,
+                "quote_volume": 0.0,
+                "num_trades": int(k.get("n", 0)),
             }
             candles.append(candle)
 
-        insert_candles(candles)
+        if candles:
+            insert_candles(candles)
         logger.info("Fetched %d historical candles for %s %s", len(candles), self.symbol, self.interval)
         return candles
 
-    async def _ws_stream(self):
-        stream = f"{self.symbol.lower()}@kline_{self.interval}"
-        url = f"{BINANCE_WS_URL}/{stream}"
-        logger.info("Connecting to WebSocket: %s", url)
+    async def _poll_candles(self):
+        interval_ms = INTERVAL_MS.get(self.interval, 60_000)
+        poll_seconds = interval_ms / 1000
+        last_open_time = 0
 
-        async for ws in websockets.connect(url, ping_interval=20, ping_timeout=10):
-            self._ws = ws
+        logger.info("Polling candles for %s %s every %ds", self.symbol, self.interval, int(poll_seconds))
+
+        while self._running:
             try:
-                async for msg in ws:
-                    if not self._running:
-                        break
-                    data = json.loads(msg)
-                    k = data.get("k", {})
-                    if not k:
-                        continue
+                now_ms = int(time.time() * 1000)
+                start = now_ms - (3 * interval_ms)
+                raw = self._info.candles_snapshot(self.symbol, self.interval, start, now_ms)
 
-                    candle = {
-                        "symbol": k["s"],
-                        "interval": k["i"],
-                        "open_time": k["t"],
-                        "open": float(k["o"]),
-                        "high": float(k["h"]),
-                        "low": float(k["l"]),
-                        "close": float(k["c"]),
-                        "volume": float(k["v"]),
-                        "close_time": k["T"],
-                        "quote_volume": float(k["q"]),
-                        "num_trades": k["n"],
-                    }
-
-                    is_closed = k["x"]
-                    if is_closed:
+                for k in raw:
+                    if k["t"] > last_open_time:
+                        candle = {
+                            "symbol": self.symbol,
+                            "interval": self.interval,
+                            "open_time": k["t"],
+                            "open": float(k["o"]),
+                            "high": float(k["h"]),
+                            "low": float(k["l"]),
+                            "close": float(k["c"]),
+                            "volume": float(k["v"]),
+                            "close_time": k["t"] + interval_ms - 1,
+                            "quote_volume": 0.0,
+                            "num_trades": int(k.get("n", 0)),
+                        }
                         insert_candle(candle)
-                        logger.debug("Candle closed: %s", candle)
                         self._notify(candle)
+                        last_open_time = k["t"]
 
-            except websockets.ConnectionClosed:
-                if not self._running:
-                    break
-                logger.warning("WebSocket disconnected, reconnecting...")
-                continue
+            except Exception as e:
+                logger.warning("Poll error for %s: %s", self.symbol, e)
 
-    def start(self):
-        self._running = True
-        if self.mode == "live":
-            asyncio.get_event_loop().run_until_complete(self._ws_stream())
+            await asyncio.sleep(poll_seconds)
 
     async def start_async(self):
         self._running = True
         if self.mode == "live":
-            await self._ws_stream()
-
-    def stop(self):
-        self._running = False
-        if self._ws:
-            asyncio.ensure_future(self._ws.close())
-
-
-class OrderBookFeed:
-    def __init__(self, symbol: str = "BTCUSDT", depth: int = 10):
-        self.symbol = symbol.upper()
-        self.depth = depth
-        self._callbacks: list[Callable] = []
-        self._running = False
-
-    def on_update(self, callback: Callable):
-        self._callbacks.append(callback)
-
-    def fetch_snapshot(self) -> dict:
-        resp = requests.get(
-            f"{BINANCE_REST_URL}/depth",
-            params={"symbol": self.symbol, "limit": self.depth},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def stream(self):
-        stream = f"{self.symbol.lower()}@depth{self.depth}@100ms"
-        url = f"{BINANCE_WS_URL}/{stream}"
-        self._running = True
-
-        async for ws in websockets.connect(url, ping_interval=20, ping_timeout=10):
-            try:
-                async for msg in ws:
-                    if not self._running:
-                        break
-                    data = json.loads(msg)
-                    for cb in self._callbacks:
-                        cb(data)
-            except websockets.ConnectionClosed:
-                if not self._running:
-                    break
-                logger.warning("OrderBook WebSocket disconnected, reconnecting...")
-                continue
+            await self._poll_candles()
 
     def stop(self):
         self._running = False

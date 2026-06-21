@@ -11,17 +11,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-try:
-    import streamlit as st
-    for key in ["BINANCE_TESTNET_API_KEY", "BINANCE_TESTNET_SECRET_KEY"]:
-        if key in st.secrets and key not in os.environ:
-            os.environ[key] = st.secrets[key]
-except Exception:
-    pass
-
 from data.feed import DataFeed
 from data.storage import init_db
-from execution.executor import BinanceTestnetExecutor
+from execution.paper_executor import PaperExecutor
 from execution.hyperliquid_executor import HyperliquidExecutor
 from strategy.base import Signal
 from strategy.loader import build_strategy
@@ -59,14 +51,8 @@ class BotRunner:
                     user_id=user_id,
                 )
             else:
-                api_key = os.getenv("BINANCE_TESTNET_API_KEY", "")
-                secret_key = os.getenv("BINANCE_TESTNET_SECRET_KEY", "")
-                if not api_key or not secret_key:
-                    logger.error("Missing API keys in .env")
-                    sys.exit(1)
-                self.executors[sym] = BinanceTestnetExecutor(
-                    api_key, secret_key, symbol=sym, leverage=leverage,
-                    user_id=user_id,
+                self.executors[sym] = PaperExecutor(
+                    symbol=sym, leverage=leverage, user_id=user_id,
                 )
             self.strategies[sym] = [build_strategy(name) for name in strategy_names]
             self.feeds[sym] = DataFeed(symbol=sym, interval=interval, mode="live")
@@ -96,8 +82,7 @@ class BotRunner:
     def _open_position(self, symbol, sig, strategy_name, side):
         executor = self.executors[symbol]
         pos_key = f"{symbol}_{strategy_name}"
-        balance_asset = "USDC" if self.mode == "live" else "USDT"
-        balance = executor.get_balance(balance_asset)
+        balance = executor.get_balance()
         alloc = balance / len(self.symbols)
         quantity = (alloc * 0.01 * self.leverage) / sig.price if sig.price > 0 else 0
         if quantity <= 0:
@@ -106,6 +91,7 @@ class BotRunner:
         result = executor.place_order(
             side=order_side, quantity=quantity,
             strategy_name=strategy_name, reason=sig.reason,
+            price=sig.price,
         )
         if result:
             self.positions[pos_key] = {
@@ -126,6 +112,7 @@ class BotRunner:
         result = executor.place_order(
             side=order_side, quantity=pos["quantity"],
             strategy_name=strategy_name, reason=reason, pnl=pnl,
+            price=price,
         )
         if result:
             del self.positions[pos_key]
@@ -181,7 +168,7 @@ class BotRunner:
 
 if __name__ == "__main__":
     config = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-    symbols = config.get("symbols", ["BTCUSDT"])
+    symbols = config.get("symbols", ["BTC"])
     strategies = config.get("strategies", ["MACD", "RSI", "BollingerBands", "Supertrend"])
     leverage = config.get("leverage", 1)
     interval = config.get("interval", "1m")
