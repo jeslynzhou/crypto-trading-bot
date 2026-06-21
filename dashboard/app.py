@@ -379,13 +379,7 @@ if active_tab == "Trading":
         eff_fee = TRADING_FEE_RATE * bot_leverage * 100
         st.caption(f"Mode: **Paper (Binance Testnet)** — Effective fee: {eff_fee:.1f}% per trade ({TRADING_FEE_RATE*100:.1f}% x {bot_leverage}x)")
 
-    is_cloud = os.environ.get("STREAMLIT_SHARING_MODE") or os.path.exists("/mount/src")
-    if is_cloud and bot_mode == "Paper":
-        st.warning("Paper trading requires a local WebSocket connection to Binance. Run `streamlit run dashboard/app.py` locally for paper trading.")
-
     can_start = bot_mode == "Paper" or (bot_mode == "Live" and hl_key and hl_address)
-    if is_cloud and bot_mode == "Paper":
-        can_start = False
 
     running = is_bot_running(user_key)
 
