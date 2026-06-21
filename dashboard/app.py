@@ -6,7 +6,9 @@ import signal as sig_mod
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import yaml
 import streamlit as st
+import streamlit_authenticator as stauth
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -16,6 +18,10 @@ from data.storage import get_trades, get_candles, get_portfolio_value, clear_tra
 from data.feed import DataFeed
 from data.prices import get_binance_24h_stats
 from strategy.loader import get_all_strategy_names, build_strategy
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+TEMPLATE_PATH = os.path.join(PROJECT_ROOT, "strategy", "custom", "_template.py")
+AUTH_CONFIG_PATH = os.path.join(PROJECT_ROOT, "auth_config.yaml")
 
 
 @st.cache_data(ttl=30)
@@ -34,29 +40,34 @@ def cached_24h_stats(symbols: tuple) -> dict:
 
 
 @st.cache_data(ttl=60)
-def cached_strategy_names() -> list[str]:
-    return get_all_strategy_names()
-
-init_db()
-
-st.set_page_config(page_title="Crypto Trading Bot", layout="wide")
-st.title("Crypto Trading Bot")
-
-BOT_PID_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".bot_pid")
-BOT_LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot.log")
-POSITIONS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".positions.json")
-CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "strategy", "custom")
-TEMPLATE_PATH = os.path.join(CUSTOM_DIR, "_template.py")
+def cached_strategy_names(user_dir: str = "") -> list[str]:
+    return get_all_strategy_names(user_dir if user_dir else None)
 
 
-def get_open_positions() -> dict:
-    if not os.path.exists(POSITIONS_FILE):
-        return {}
+@st.cache_data(ttl=10)
+def fetch_hl_portfolio(address: str) -> dict:
     try:
-        with open(POSITIONS_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {}
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+        info = Info(constants.MAINNET_API_URL)
+        state = info.user_state(address)
+        balance = float(state.get("marginSummary", {}).get("accountValue", 0))
+        withdrawable = float(state.get("withdrawable", 0))
+        positions = []
+        for p in state.get("assetPositions", []):
+            pos = p.get("position", {})
+            if float(pos.get("szi", 0)) != 0:
+                positions.append({
+                    "coin": pos.get("coin", ""),
+                    "size": float(pos.get("szi", 0)),
+                    "entry_price": float(pos.get("entryPx", 0)),
+                    "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
+                    "leverage": int(float(pos.get("leverage", {}).get("value", 1))),
+                    "liquidation_price": float(pos.get("liquidationPx", 0) or 0),
+                })
+        return {"balance": balance, "withdrawable": withdrawable, "positions": positions}
+    except Exception as e:
+        return {"balance": 0, "withdrawable": 0, "positions": [], "error": str(e)}
 
 
 def calc_unrealized_pnl(positions: dict, prices: dict) -> float:
@@ -73,47 +84,147 @@ def calc_unrealized_pnl(positions: dict, prices: dict) -> float:
     return total
 
 
-def is_bot_running() -> bool:
-    if not os.path.exists(BOT_PID_FILE):
+# ── Per-user file helpers ──
+
+def user_pid_file(username):
+    return os.path.join(PROJECT_ROOT, f".bot_pid_{username}")
+
+
+def user_log_file(username):
+    return os.path.join(PROJECT_ROOT, f"bot_{username}.log")
+
+
+def user_positions_file(username):
+    return os.path.join(PROJECT_ROOT, f".positions_{username}.json")
+
+
+def user_custom_dir(username):
+    d = os.path.join(PROJECT_ROOT, "strategy", "custom", username)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def get_open_positions(username):
+    path = user_positions_file(username)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def is_bot_running(username):
+    path = user_pid_file(username)
+    if not os.path.exists(path):
         return False
-    with open(BOT_PID_FILE) as f:
+    with open(path) as f:
         pid = int(f.read().strip())
     try:
         os.kill(pid, 0)
         return True
     except (OSError, ProcessLookupError):
-        os.remove(BOT_PID_FILE)
+        os.remove(path)
         return False
 
 
-def start_bot(symbols, strategies, leverage, interval):
+def start_bot(symbols, strategies, leverage, interval, username,
+              mode="paper", hl_private_key=""):
     config = json.dumps({
         "symbols": symbols, "strategies": strategies,
         "leverage": leverage, "interval": interval,
+        "mode": mode, "user_id": username,
     })
-    log_fh = open(BOT_LOG_FILE, "a")
+    log_fh = open(user_log_file(username), "a")
+    env = os.environ.copy()
+    if hl_private_key:
+        env["HL_PRIVATE_KEY"] = hl_private_key
     proc = subprocess.Popen(
         [sys.executable, "-u", "bot_runner.py", config],
-        cwd=os.path.dirname(os.path.dirname(__file__)),
+        cwd=PROJECT_ROOT,
         stdout=log_fh, stderr=log_fh,
+        env=env,
     )
-    with open(BOT_PID_FILE, "w") as f:
+    with open(user_pid_file(username), "w") as f:
         f.write(str(proc.pid))
 
 
-def stop_bot():
-    if not os.path.exists(BOT_PID_FILE):
+def stop_bot(username):
+    path = user_pid_file(username)
+    if not os.path.exists(path):
         return
-    with open(BOT_PID_FILE) as f:
+    with open(path) as f:
         pid = int(f.read().strip())
     try:
         os.kill(pid, sig_mod.SIGTERM)
     except (OSError, ProcessLookupError):
         pass
-    os.remove(BOT_PID_FILE)
+    os.remove(path)
 
 
-all_strat_names = cached_strategy_names()
+# ── Auth ──
+
+init_db()
+st.set_page_config(page_title="Velox", layout="wide")
+
+
+def load_auth_config():
+    if not os.path.exists(AUTH_CONFIG_PATH):
+        cfg = {
+            "credentials": {"usernames": {}},
+            "cookie": {
+                "expiry_days": 30,
+                "key": "crypto_bot_auth_key",
+                "name": "crypto_bot_auth",
+            },
+        }
+        with open(AUTH_CONFIG_PATH, "w") as f:
+            yaml.dump(cfg, f)
+        return cfg
+    with open(AUTH_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def save_auth_config(cfg):
+    with open(AUTH_CONFIG_PATH, "w") as f:
+        yaml.dump(cfg, f)
+
+
+auth_config = load_auth_config()
+authenticator = stauth.Authenticate(
+    auth_config["credentials"],
+    auth_config["cookie"]["name"],
+    auth_config["cookie"]["key"],
+    auth_config["cookie"]["expiry_days"],
+)
+
+if st.session_state.get("authentication_status") is None or st.session_state.get("authentication_status") is False:
+    st.title("Velox")
+    tab_login, tab_register = st.tabs(["Login", "Register"])
+    with tab_login:
+        authenticator.login(location="main")
+        if st.session_state.get("authentication_status") is False:
+            st.error("Wrong username or password.")
+    with tab_register:
+        try:
+            res = authenticator.register_user()
+            if res:
+                save_auth_config(auth_config)
+                st.success("Registered! Please log in.")
+        except Exception as e:
+            st.error(str(e))
+    st.stop()
+
+# ── Authenticated ──
+username = st.session_state["username"]
+user_dir = user_custom_dir(username)
+all_strat_names = cached_strategy_names(user_dir)
+
+st.title("Velox")
+with st.sidebar:
+    st.write(f"Logged in as **{username}**")
+    authenticator.logout("Logout")
 
 TAB_NAMES = ["Markets", "Trading", "Backtest", "Strategy Editor"]
 params = st.query_params
@@ -146,10 +257,10 @@ if active_tab == "Markets":
         per_row = 6
         for row_start in range(0, len(SYMBOLS), per_row):
             row_syms = SYMBOLS[row_start:row_start + per_row]
-            cols = st.columns(per_row)
+            mcols = st.columns(per_row)
             for i, sym in enumerate(row_syms):
                 s = stats.get(sym, {})
-                with cols[i]:
+                with mcols[i]:
                     label = sym.replace("USDT", "")
                     price = s.get("price", 0)
                     change = s.get("change_pct", 0)
@@ -233,9 +344,21 @@ if active_tab == "Markets":
 
 if active_tab == "Trading":
 
-    # ── Bot Controls ──
     st.subheader("Bot Controls")
-    running = is_bot_running()
+    running_paper = is_bot_running(f"{username}_paper")
+    running_live = is_bot_running(f"{username}_live")
+
+    bot_mode = st.radio("Mode", ["Paper", "Live"], horizontal=True, key="bot_mode")
+
+    hl_address = ""
+    hl_key = os.environ.get("HL_PRIVATE_KEY", "")
+    if bot_mode == "Live":
+        hl_address = st.text_input("Wallet Address (public, for viewing portfolio)",
+                                   key="hl_address", placeholder="0x...")
+        if not hl_key:
+            st.info("To trade live, add `HL_PRIVATE_KEY=0x...` to your `.env` file. Your wallet address above is only used to view your portfolio.")
+
+    user_key = f"{username}_{bot_mode.lower()}"
 
     ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns(4)
     with ctrl_col1:
@@ -249,76 +372,114 @@ if active_tab == "Trading":
     with ctrl_col4:
         bot_interval = st.selectbox("Interval", ["1m", "5m", "15m"], key="bot_int")
 
-    eff_fee = TRADING_FEE_RATE * bot_leverage * 100
-    st.caption(f"Effective fee: {eff_fee:.1f}% per trade ({TRADING_FEE_RATE*100:.1f}% × {bot_leverage}x)")
+    if bot_mode == "Live":
+        eff_fee = 0.035 * bot_leverage
+        st.caption(f"Mode: **LIVE (Hyperliquid)** — Effective fee: {eff_fee:.2f}% per trade (0.035% x {bot_leverage}x)")
+    else:
+        eff_fee = TRADING_FEE_RATE * bot_leverage * 100
+        st.caption(f"Mode: **Paper (Binance Testnet)** — Effective fee: {eff_fee:.1f}% per trade ({TRADING_FEE_RATE*100:.1f}% x {bot_leverage}x)")
+
+    can_start = bot_mode == "Paper" or (bot_mode == "Live" and hl_key and hl_address)
+
+    running = is_bot_running(user_key)
 
     btn_col1, btn_col2, btn_col3, status_col = st.columns([1, 1, 1, 2])
     with btn_col1:
-        if st.button("Start Bot", disabled=running, type="primary"):
-            stop_bot()
-            start_bot([bot_symbol], bot_strats, bot_leverage, bot_interval)
+        if st.button("Start Bot", disabled=running or not can_start, type="primary"):
+            stop_bot(user_key)
+            start_bot([bot_symbol], bot_strats, bot_leverage, bot_interval,
+                      username=user_key, mode=bot_mode.lower(), hl_private_key=hl_key)
             st.rerun()
     with btn_col2:
         if st.button("Stop Bot", disabled=not running):
-            stop_bot()
+            stop_bot(user_key)
             st.rerun()
     with btn_col3:
         if st.button("Reset Portfolio", disabled=running):
-            stop_bot()
-            clear_trades()
-            if os.path.exists(POSITIONS_FILE):
-                os.remove(POSITIONS_FILE)
+            stop_bot(user_key)
+            clear_trades(user_id=user_key)
+            pos_path = user_positions_file(user_key)
+            if os.path.exists(pos_path):
+                os.remove(pos_path)
             st.rerun()
     with status_col:
         if running:
-            st.success("Bot is running")
+            st.success(f"{bot_mode} bot is running")
         else:
-            st.info(f"Bot is stopped — Portfolio: ${INITIAL_CAPITAL:,.0f}")
+            st.info(f"{bot_mode} — Portfolio: ${INITIAL_CAPITAL:,.0f}")
 
     st.divider()
 
     # ── P&L ──
-    all_trades = get_trades(limit=5000)
-    total_pnl = sum(t["pnl"] for t in all_trades)
-    total_fees = sum(t.get("fee", 0) for t in all_trades)
-    realized_pnl = total_pnl - total_fees
+    if bot_mode == "Live" and hl_address:
+        hl_portfolio = fetch_hl_portfolio(hl_address)
+        hl_balance = hl_portfolio["balance"]
+        hl_positions = hl_portfolio["positions"]
+        hl_unrealized = sum(p["unrealized_pnl"] for p in hl_positions)
 
-    open_positions = get_open_positions()
-    unrealized = 0.0
-    if open_positions and running:
-        price_stats = cached_24h_stats(tuple(SYMBOLS))
-        current_prices = {s: d.get("price", 0) for s, d in price_stats.items()} if price_stats else {}
-        unrealized = calc_unrealized_pnl(open_positions, current_prices)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Account Value", f"${hl_balance:,.2f}")
+        col2.metric("Unrealized P&L", f"${hl_unrealized:,.2f}",
+                    delta=f"{hl_unrealized:+,.2f}" if hl_unrealized != 0 else None)
+        col3.metric("Withdrawable", f"${hl_portfolio['withdrawable']:,.2f}")
 
-    portfolio_value = INITIAL_CAPITAL + realized_pnl + unrealized
+        if hl_positions:
+            with st.expander(f"Hyperliquid Positions ({len(hl_positions)})", expanded=True):
+                st.dataframe(pd.DataFrame([{
+                    "Coin": p["coin"],
+                    "Size": f"{p['size']:.4f}",
+                    "Side": "LONG" if p["size"] > 0 else "SHORT",
+                    "Entry": f"${p['entry_price']:,.2f}",
+                    "Liq. Price": f"${p['liquidation_price']:,.2f}" if p["liquidation_price"] > 0 else "—",
+                    "Leverage": f"{p['leverage']}x",
+                    "Unrealized P&L": f"${p['unrealized_pnl']:,.2f}",
+                } for p in hl_positions]), use_container_width=True, hide_index=True)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Portfolio", f"${portfolio_value:,.2f}", delta=f"{realized_pnl + unrealized:+,.2f}")
-    col2.metric("Realized P&L", f"${realized_pnl:,.2f}")
-    col3.metric("Unrealized P&L", f"${unrealized:,.2f}",
-                delta=f"{unrealized:+,.2f}" if unrealized != 0 else None)
-    col4.metric("Fees Paid", f"${total_fees:,.2f}")
+        if "error" in hl_portfolio:
+            st.error(f"Failed to fetch portfolio: {hl_portfolio['error']}")
 
-    if open_positions and running:
-        with st.expander(f"Open Positions ({len(open_positions)})", expanded=True):
-            pos_data = []
-            for key, pos in open_positions.items():
-                sym = pos["symbol"]
-                cur_price = current_prices.get(sym, 0)
-                if pos["side"] == "LONG":
-                    pos_pnl = (cur_price - pos["entry_price"]) * pos["quantity"]
-                else:
-                    pos_pnl = (pos["entry_price"] - cur_price) * pos["quantity"]
-                pos_data.append({
-                    "Symbol": sym.replace("USDT", "/USDT"),
-                    "Strategy": pos["strategy"],
-                    "Side": pos["side"],
-                    "Entry": f"${pos['entry_price']:,.2f}",
-                    "Current": f"${cur_price:,.2f}" if cur_price > 0 else "—",
-                    "Qty": f"{pos['quantity']:.6f}",
-                    "P&L": f"${pos_pnl:,.2f}",
-                })
-            st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
+    else:
+        all_trades = get_trades(limit=5000, user_id=user_key)
+        total_pnl = sum(t["pnl"] for t in all_trades)
+        total_fees = sum(t.get("fee", 0) for t in all_trades)
+        realized_pnl = total_pnl - total_fees
+
+        open_positions = get_open_positions(user_key)
+        unrealized = 0.0
+        if open_positions and running:
+            price_stats = cached_24h_stats(tuple(SYMBOLS))
+            current_prices = {s: d.get("price", 0) for s, d in price_stats.items()} if price_stats else {}
+            unrealized = calc_unrealized_pnl(open_positions, current_prices)
+
+        portfolio_value = INITIAL_CAPITAL + realized_pnl + unrealized
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Portfolio", f"${portfolio_value:,.2f}", delta=f"{realized_pnl + unrealized:+,.2f}")
+        col2.metric("Realized P&L", f"${realized_pnl:,.2f}")
+        col3.metric("Unrealized P&L", f"${unrealized:,.2f}",
+                    delta=f"{unrealized:+,.2f}" if unrealized != 0 else None)
+        col4.metric("Fees Paid", f"${total_fees:,.2f}")
+
+        if open_positions and running:
+            with st.expander(f"Open Positions ({len(open_positions)})", expanded=True):
+                pos_data = []
+                for key, pos in open_positions.items():
+                    sym = pos["symbol"]
+                    cur_price = current_prices.get(sym, 0)
+                    if pos["side"] == "LONG":
+                        pos_pnl = (cur_price - pos["entry_price"]) * pos["quantity"]
+                    else:
+                        pos_pnl = (pos["entry_price"] - cur_price) * pos["quantity"]
+                    pos_data.append({
+                        "Symbol": sym.replace("USDT", "/USDT"),
+                        "Strategy": pos["strategy"],
+                        "Side": pos["side"],
+                        "Entry": f"${pos['entry_price']:,.2f}",
+                        "Current": f"${cur_price:,.2f}" if cur_price > 0 else "—",
+                        "Qty": f"{pos['quantity']:.6f}",
+                        "P&L": f"${pos_pnl:,.2f}",
+                    })
+                st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
 
     # ── Price Chart ──
     show_price = st.toggle("Show Price Chart", value=True, key="show_price")
@@ -372,7 +533,7 @@ if active_tab == "Trading":
             fig_price.add_trace(go.Bar(x=pdf["time"], y=pdf["volume"], name="Volume",
                                        marker_color=vol_colors, opacity=0.5), row=2, col=1)
 
-            trade_list = get_trades(symbol=bot_symbol, limit=200)
+            trade_list = get_trades(symbol=bot_symbol, limit=200, user_id=user_key)
             if trade_list:
                 tdf = pd.DataFrame(trade_list)
                 tdf["timestamp"] = pd.to_datetime(tdf["timestamp"], utc=True).dt.tz_localize(None)
@@ -452,6 +613,7 @@ if active_tab == "Trading":
         strategy_name=f_strat if f_strat != "All" else None,
         symbol=f_sym if f_sym != "All" else None,
         limit=50,
+        user_id=user_key,
     )
     if filtered:
         st.dataframe(pd.DataFrame([{
@@ -466,13 +628,14 @@ if active_tab == "Trading":
 
     # ── Bot Log ──
     st.subheader("Bot Log")
-    if os.path.exists(BOT_LOG_FILE):
-        with open(BOT_LOG_FILE) as f:
+    log_path = user_log_file(user_key)
+    if os.path.exists(log_path):
+        with open(log_path) as f:
             lines = f.readlines()
         tail = lines[-30:] if len(lines) > 30 else lines
         st.code("".join(tail), language="log")
         if st.button("Clear Log"):
-            open(BOT_LOG_FILE, "w").close()
+            open(log_path, "w").close()
             st.rerun()
     else:
         st.info("No log file yet. Start the bot to see output here.")
@@ -492,7 +655,7 @@ if active_tab == "Backtest":
         bt_strategies = st.multiselect("Strategies", all_strat_names,
                                        default=STRATEGY_NAMES, key="bt_s")
         eff = TRADING_FEE_RATE * bt_leverage * 100
-        st.caption(f"Effective fee: {eff:.1f}% ({TRADING_FEE_RATE*100:.1f}% × {bt_leverage}x)")
+        st.caption(f"Effective fee: {eff:.1f}% ({TRADING_FEE_RATE*100:.1f}% x {bt_leverage}x)")
 
     with col_right:
         st.subheader("Customize Parameters")
@@ -502,17 +665,17 @@ if active_tab == "Backtest":
             defaults = info.get("params", {})
             desc = info.get("description", sname)
             with st.expander(f"{sname} — {desc}", expanded=False):
-                params = {}
+                bt_params = {}
                 for pname, default in defaults.items():
                     if isinstance(default, float):
-                        params[pname] = st.number_input(
+                        bt_params[pname] = st.number_input(
                             pname, value=default, step=0.1, format="%.1f",
                             key=f"p_{sname}_{pname}")
                     elif isinstance(default, int):
-                        params[pname] = st.number_input(
+                        bt_params[pname] = st.number_input(
                             pname, value=default, step=1, min_value=1,
                             key=f"p_{sname}_{pname}")
-                custom_params[sname] = params
+                custom_params[sname] = bt_params
 
     if st.button("Run Backtest", type="primary"):
         from backtest import Backtester
@@ -521,8 +684,8 @@ if active_tab == "Backtest":
         progress = st.progress(0)
         for i, sname in enumerate(bt_strategies):
             with st.spinner(f"Running {sname}..."):
-                params = custom_params.get(sname, {})
-                strat = build_strategy(sname, params if params else None)
+                p = custom_params.get(sname, {})
+                strat = build_strategy(sname, p if p else None, user_dir=user_dir)
                 bt = Backtester(strat, symbol=bt_symbol, interval=bt_interval,
                                 fee_rate=TRADING_FEE_RATE, leverage=bt_leverage)
                 results[sname] = bt.run()
@@ -573,7 +736,7 @@ if active_tab == "Strategy Editor":
         st.session_state.editor_mode = "new"
         st.session_state.editor_file = ""
 
-    existing_custom = sorted([f[:-3] for f in os.listdir(CUSTOM_DIR)
+    existing_custom = sorted([f[:-3] for f in os.listdir(user_dir)
                               if f.endswith(".py") and not f.startswith("_")])
 
     col_sidebar, col_editor = st.columns([1, 4])
@@ -596,7 +759,7 @@ if active_tab == "Strategy Editor":
                     st.rerun()
             with col_x:
                 if st.button("x", key=f"strat_del_{name}"):
-                    filepath = os.path.join(CUSTOM_DIR, f"{name}.py")
+                    filepath = os.path.join(user_dir, f"{name}.py")
                     if os.path.exists(filepath):
                         os.remove(filepath)
                         st.toast(f"Deleted {name}.py")
@@ -610,7 +773,7 @@ if active_tab == "Strategy Editor":
 
     with col_editor:
         if st.session_state.editor_mode == "edit" and st.session_state.editor_file:
-            filepath = os.path.join(CUSTOM_DIR, f"{st.session_state.editor_file}.py")
+            filepath = os.path.join(user_dir, f"{st.session_state.editor_file}.py")
             if os.path.exists(filepath):
                 with open(filepath) as f:
                     default_code = f.read()
@@ -648,7 +811,7 @@ if active_tab == "Strategy Editor":
             if not name:
                 st.error("Enter a filename.")
             else:
-                filepath = os.path.join(CUSTOM_DIR, f"{name}.py")
+                filepath = os.path.join(user_dir, f"{name}.py")
                 try:
                     compile(code, filepath, "exec")
                     with open(filepath, "w") as f:
@@ -659,4 +822,3 @@ if active_tab == "Strategy Editor":
                     st.rerun()
                 except SyntaxError as e:
                     st.error(f"Syntax error on line {e.lineno}: {e.msg}")
-

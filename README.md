@@ -54,16 +54,24 @@ Control the live bot and monitor performance.
 
 **Bot Controls:**
 
-1. Select a **Coin**, one or more **Strategies**, a **Leverage** level, and an **Interval**
-2. Click **Start Bot** to begin trading
-3. Click **Stop Bot** to stop
-4. Click **Reset Portfolio** to wipe all trades and reset capital to $1,000
+1. Choose **Paper** (Binance Testnet) or **Live** (Hyperliquid) mode
+2. For Live mode, enter your Hyperliquid wallet private key
+3. Select a **Coin**, one or more **Strategies**, a **Leverage** level, and an **Interval**
+4. Click **Start Bot** to begin trading
+5. Click **Stop Bot** to stop
+6. Click **Reset Portfolio** to wipe all trades and reset capital to $1,000
+
+| Mode | Exchange | Currency | Fees | Real Money |
+|------|----------|----------|------|------------|
+| Paper | Binance Testnet | USDT | 0.1% | No |
+| Live | Hyperliquid | USDC | 0.035% | Yes |
 
 **Sections below the controls:**
 
 | Section | What it shows |
 |---------|--------------|
-| Portfolio / Net P&L / Fees | Current account value and cumulative P&L |
+| Portfolio / Realized / Unrealized / Fees | Live account value including open positions |
+| Open Positions | Current positions with entry, current price, and P&L |
 | Price Chart | Toggle on/off; shows live candlesticks with buy/sell markers |
 | P&L Curve | Cumulative net P&L per strategy over time |
 | Trade Log | Filterable table of all executed trades |

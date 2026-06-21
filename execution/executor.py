@@ -20,12 +20,13 @@ TESTNET_BASE_URL = "https://testnet.binance.vision/api/v3"
 
 class BinanceTestnetExecutor:
     def __init__(self, api_key: str, secret_key: str, symbol: str = "BTCUSDT",
-                 leverage: int = 1):
+                 leverage: int = 1, user_id: str = "default"):
         self.api_key = api_key
         self.secret_key = secret_key
         self.symbol = symbol
         self.leverage = leverage
         self.fee_rate = TRADING_FEE_RATE
+        self.user_id = user_id
         self._session = requests.Session()
         self._session.headers.update({"X-MBX-APIKEY": self.api_key})
         self._step_size = self._fetch_step_size()
@@ -101,6 +102,7 @@ class BinanceTestnetExecutor:
             fee = fill_price * quantity * self.fee_rate
 
             trade_record = {
+                "user_id": self.user_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "symbol": self.symbol,
                 "side": side.upper(),

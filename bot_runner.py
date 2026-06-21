@@ -22,6 +22,7 @@ except Exception:
 from data.feed import DataFeed
 from data.storage import init_db
 from execution.executor import BinanceTestnetExecutor
+from execution.hyperliquid_executor import HyperliquidExecutor
 from strategy.base import Signal
 from strategy.loader import build_strategy
 
@@ -32,31 +33,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MIN_CONFIDENCE = 0.3
-POSITIONS_FILE = os.path.join(os.path.dirname(__file__), ".positions.json")
 
 
 class BotRunner:
     def __init__(self, symbols: list[str], strategy_names: list[str],
-                 leverage: int = 1, interval: str = "1m"):
-        api_key = os.getenv("BINANCE_TESTNET_API_KEY", "")
-        secret_key = os.getenv("BINANCE_TESTNET_SECRET_KEY", "")
-
-        if not api_key or not secret_key:
-            logger.error("Missing API keys in .env")
-            sys.exit(1)
-
+                 leverage: int = 1, interval: str = "1m",
+                 mode: str = "paper", hl_private_key: str = "",
+                 user_id: str = "default"):
         self.symbols = symbols
         self.leverage = leverage
         self.interval = interval
+        self.mode = mode
+        self.user_id = user_id
+        self.positions_file = os.path.join(
+            os.path.dirname(__file__), f".positions_{user_id}.json")
         self.executors = {}
         self.strategies = {}
         self.feeds = {}
         self.positions = {}
 
         for sym in symbols:
-            self.executors[sym] = BinanceTestnetExecutor(
-                api_key, secret_key, symbol=sym, leverage=leverage,
-            )
+            if mode == "live" and hl_private_key:
+                self.executors[sym] = HyperliquidExecutor(
+                    hl_private_key, symbol=sym, leverage=leverage,
+                    user_id=user_id,
+                )
+            else:
+                api_key = os.getenv("BINANCE_TESTNET_API_KEY", "")
+                secret_key = os.getenv("BINANCE_TESTNET_SECRET_KEY", "")
+                if not api_key or not secret_key:
+                    logger.error("Missing API keys in .env")
+                    sys.exit(1)
+                self.executors[sym] = BinanceTestnetExecutor(
+                    api_key, secret_key, symbol=sym, leverage=leverage,
+                    user_id=user_id,
+                )
             self.strategies[sym] = [build_strategy(name) for name in strategy_names]
             self.feeds[sym] = DataFeed(symbol=sym, interval=interval, mode="live")
 
@@ -79,13 +90,14 @@ class BotRunner:
                 "quantity": pos["quantity"],
                 "side": pos["side"],
             }
-        with open(POSITIONS_FILE, "w") as f:
+        with open(self.positions_file, "w") as f:
             json.dump(data, f)
 
     def _open_position(self, symbol, sig, strategy_name, side):
         executor = self.executors[symbol]
         pos_key = f"{symbol}_{strategy_name}"
-        balance = executor.get_balance("USDT")
+        balance_asset = "USDC" if self.mode == "live" else "USDT"
+        balance = executor.get_balance(balance_asset)
         alloc = balance / len(self.symbols)
         quantity = (alloc * 0.01 * self.leverage) / sig.price if sig.price > 0 else 0
         if quantity <= 0:
@@ -135,8 +147,8 @@ class BotRunner:
 
     def run(self):
         init_db()
-        logger.info("Bot starting: symbols=%s, leverage=%dx, strategies=%s",
-                     self.symbols, self.leverage,
+        logger.info("Bot starting: user=%s, mode=%s, symbols=%s, leverage=%dx, strategies=%s",
+                     self.user_id, self.mode, self.symbols, self.leverage,
                      [s.name for s in self.strategies[self.symbols[0]]])
 
         for sym in self.symbols:
@@ -173,6 +185,10 @@ if __name__ == "__main__":
     strategies = config.get("strategies", ["MACD", "RSI", "BollingerBands", "Supertrend"])
     leverage = config.get("leverage", 1)
     interval = config.get("interval", "1m")
+    mode = config.get("mode", "paper")
+    user_id = config.get("user_id", "default")
+    hl_private_key = os.environ.get("HL_PRIVATE_KEY", "")
 
-    bot = BotRunner(symbols, strategies, leverage=leverage, interval=interval)
+    bot = BotRunner(symbols, strategies, leverage=leverage, interval=interval,
+                    mode=mode, hl_private_key=hl_private_key, user_id=user_id)
     bot.run()

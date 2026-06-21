@@ -2,6 +2,7 @@ import importlib
 import importlib.util
 import os
 import logging
+from typing import Optional
 
 from strategy.macd import MACDStrategy
 from strategy.rsi import RSIStrategy
@@ -21,14 +22,13 @@ STRATEGY_CLASSES = {
 CUSTOM_DIR = os.path.join(os.path.dirname(__file__), "custom")
 
 
-def discover_custom_strategies() -> dict[str, type]:
-    found = {}
-    if not os.path.isdir(CUSTOM_DIR):
-        return found
-    for filename in os.listdir(CUSTOM_DIR):
+def _scan_dir(directory: str, found: dict):
+    if not os.path.isdir(directory):
+        return
+    for filename in os.listdir(directory):
         if filename.startswith("_") or not filename.endswith(".py"):
             continue
-        filepath = os.path.join(CUSTOM_DIR, filename)
+        filepath = os.path.join(directory, filename)
         module_name = f"strategy.custom.{filename[:-3]}"
         try:
             spec = importlib.util.spec_from_file_location(module_name, filepath)
@@ -47,21 +47,28 @@ def discover_custom_strategies() -> dict[str, type]:
                     logger.info("Discovered custom strategy: %s from %s", name, filename)
         except Exception as e:
             logger.error("Failed to load custom strategy %s: %s", filename, e)
+
+
+def discover_custom_strategies(user_dir: Optional[str] = None) -> dict[str, type]:
+    found = {}
+    _scan_dir(CUSTOM_DIR, found)
+    if user_dir:
+        _scan_dir(user_dir, found)
     return found
 
 
-def get_all_strategy_classes() -> dict[str, type]:
+def get_all_strategy_classes(user_dir: Optional[str] = None) -> dict[str, type]:
     all_classes = dict(STRATEGY_CLASSES)
-    all_classes.update(discover_custom_strategies())
+    all_classes.update(discover_custom_strategies(user_dir))
     return all_classes
 
 
-def get_all_strategy_names() -> list[str]:
-    return list(get_all_strategy_classes().keys())
+def get_all_strategy_names(user_dir: Optional[str] = None) -> list[str]:
+    return list(get_all_strategy_classes(user_dir).keys())
 
 
-def build_strategy(name: str, params: dict = None):
-    all_classes = get_all_strategy_classes()
+def build_strategy(name: str, params: dict = None, user_dir: Optional[str] = None):
+    all_classes = get_all_strategy_classes(user_dir)
     cls = all_classes.get(name)
     if cls is None:
         raise ValueError(f"Unknown strategy: {name}")
@@ -70,8 +77,8 @@ def build_strategy(name: str, params: dict = None):
     return cls()
 
 
-def build_all_strategies(custom_params: dict = None):
-    all_classes = get_all_strategy_classes()
+def build_all_strategies(custom_params: dict = None, user_dir: Optional[str] = None):
+    all_classes = get_all_strategy_classes(user_dir)
     strategies = []
     custom_params = custom_params or {}
     for name, cls in all_classes.items():

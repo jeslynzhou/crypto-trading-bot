@@ -1,9 +1,10 @@
 .env
 .env.example
 *.db
-bot.log
-.bot_pid
-.positions.json
+bot*.log
+.bot_pid*
+.positions_*.json
+auth_config.yaml
 __pycache__/
 *.pyc
 .DS_Store
