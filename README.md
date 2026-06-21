@@ -40,7 +40,7 @@ The dashboard opens at `http://localhost:8501`.
 
 ### Markets
 
-Browse live prices for all supported coins (BTC, SOL, INJ, RENDER, DASH, LINK).
+Browse live prices for all 18 supported coins.
 
 - **Symbol / Timeframe** — pick any coin and candle interval (1m, 5m, 15m, 1h)
 - **Chart Type** — toggle between Candlestick and Line view
@@ -200,7 +200,7 @@ Edit `config.py` to change:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `SYMBOLS` | BTC, SOL, INJ, RENDER, DASH, LINK | Supported trading pairs |
+| `SYMBOLS` | BTC, ETH, SOL, BNB, XRP, DOGE, ADA, AVAX, DOT, MATIC, NEAR, SUI, ARB, LTC, INJ, RENDER, LINK, DASH | Supported trading pairs |
 | `INITIAL_CAPITAL` | `1000.0` | Starting portfolio value |
 | `TRADING_FEE_RATE` | `0.001` (0.1%) | Fee per trade |
 | `LEVERAGE_OPTIONS` | 1, 2, 3, 5, 10, 20 | Available leverage levels |

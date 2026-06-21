@@ -1,13 +1,25 @@
 SYMBOLS = [
     "BTCUSDT",
+    "ETHUSDT",
     "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "DOTUSDT",
+    "MATICUSDT",
+    "NEARUSDT",
+    "SUIUSDT",
+    "ARBUSDT",
+    "LTCUSDT",
     "INJUSDT",
     "RENDERUSDT",
-    "DASHUSDT",
     "LINKUSDT",
+    "DASHUSDT",
 ]
 
-HYPERLIQUID_ASSETS = ["BTC", "SOL", "INJ", "RENDER", "DASH", "LINK"]
+HYPERLIQUID_ASSETS = [s.replace("USDT", "") for s in SYMBOLS]
 
 TRADING_FEE_RATE = 0.001
 

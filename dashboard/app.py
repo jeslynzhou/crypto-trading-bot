@@ -13,8 +13,18 @@ from plotly.subplots import make_subplots
 
 from config import SYMBOLS, STRATEGIES, STRATEGY_NAMES, LEVERAGE_OPTIONS, TRADING_FEE_RATE, INITIAL_CAPITAL
 from data.storage import get_trades, get_candles, get_portfolio_value, clear_trades, init_db
+from data.feed import DataFeed
 from data.prices import get_binance_24h_stats
 from strategy.loader import get_all_strategy_names, build_strategy
+
+
+def fetch_candles(symbol: str, interval: str, limit: int = 500) -> list[dict]:
+    candles = get_candles(symbol, interval, limit=limit)
+    if not candles:
+        feed = DataFeed(symbol=symbol, interval=interval)
+        feed.fetch_historical(limit=limit)
+        candles = get_candles(symbol, interval, limit=limit)
+    return candles
 
 init_db()
 
@@ -85,16 +95,19 @@ with tab_markets:
 
     stats = get_binance_24h_stats(SYMBOLS)
     if stats:
-        cols = st.columns(6)
-        for i, sym in enumerate(SYMBOLS):
-            s = stats.get(sym, {})
-            with cols[i]:
-                label = sym.replace("USDT", "")
-                price = s.get("price", 0)
-                change = s.get("change_pct", 0)
-                st.metric(label,
-                          f"${price:,.2f}" if price >= 1 else f"${price:.4f}",
-                          delta=f"{change:+.2f}%")
+        per_row = 6
+        for row_start in range(0, len(SYMBOLS), per_row):
+            row_syms = SYMBOLS[row_start:row_start + per_row]
+            cols = st.columns(per_row)
+            for i, sym in enumerate(row_syms):
+                s = stats.get(sym, {})
+                with cols[i]:
+                    label = sym.replace("USDT", "")
+                    price = s.get("price", 0)
+                    change = s.get("change_pct", 0)
+                    st.metric(label,
+                              f"${price:,.2f}" if price >= 1 else f"${price:.4f}",
+                              delta=f"{change:+.2f}%")
 
     chart_type = st.radio("Chart Type", ["Candlestick", "Line"], horizontal=True, key="mkt_chart_type")
     show_volume = st.toggle("Show Volume", value=True, key="mkt_vol")
@@ -111,7 +124,7 @@ with tab_markets:
                 st.rerun()
     candle_limit = range_limits[st.session_state[f"mkt_range_{selected}"]]
 
-    candles = get_candles(selected, timeframe, limit=candle_limit)
+    candles = fetch_candles(selected, timeframe, limit=candle_limit)
     if candles:
         df = pd.DataFrame(candles)
         df["time"] = pd.to_datetime(df["open_time"], unit="ms")
@@ -259,7 +272,7 @@ with tab_trading:
         selected_range = st.session_state.get(f"price_range_{bot_symbol}", "1h")
         limit = candle_limits[selected_range]
 
-        price_candles = get_candles(bot_symbol, chart_interval, limit=limit)
+        price_candles = fetch_candles(bot_symbol, chart_interval, limit=limit)
         if price_candles:
             pdf = pd.DataFrame(price_candles)
             pdf["time"] = pd.to_datetime(pdf["open_time"], unit="ms")

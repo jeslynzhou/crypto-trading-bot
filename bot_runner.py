@@ -9,13 +9,21 @@ import signal
 
 from dotenv import load_dotenv
 
+load_dotenv()
+
+try:
+    import streamlit as st
+    for key in ["BINANCE_TESTNET_API_KEY", "BINANCE_TESTNET_SECRET_KEY"]:
+        if key in st.secrets and key not in os.environ:
+            os.environ[key] = st.secrets[key]
+except Exception:
+    pass
+
 from data.feed import DataFeed
 from data.storage import init_db
 from execution.executor import BinanceTestnetExecutor
 from strategy.base import Signal
 from strategy.loader import build_strategy
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,

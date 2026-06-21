@@ -3,6 +3,7 @@ import time
 from typing import Callable, Optional
 
 from data.storage import get_candles
+from data.feed import DataFeed
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,16 @@ class ReplayFeed:
             start_time=self.start_time,
             end_time=self.end_time,
         )
+        if not candles:
+            feed = DataFeed(symbol=self.symbol, interval=self.interval)
+            feed.fetch_historical(limit=500)
+            candles = get_candles(
+                symbol=self.symbol,
+                interval=self.interval,
+                limit=100000,
+                start_time=self.start_time,
+                end_time=self.end_time,
+            )
         logger.info("Replaying %d candles for %s %s", len(candles), self.symbol, self.interval)
 
         for candle in candles:
