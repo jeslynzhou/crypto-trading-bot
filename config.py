@@ -8,7 +8,7 @@ SYMBOLS = [
     "ADAUSDT",
     "AVAXUSDT",
     "DOTUSDT",
-    "MATICUSDT",
+    "POLUSDT",
     "NEARUSDT",
     "SUIUSDT",
     "ARBUSDT",

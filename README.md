@@ -200,7 +200,7 @@ Edit `config.py` to change:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `SYMBOLS` | BTC, ETH, SOL, BNB, XRP, DOGE, ADA, AVAX, DOT, MATIC, NEAR, SUI, ARB, LTC, INJ, RENDER, LINK, DASH | Supported trading pairs |
+| `SYMBOLS` | BTC, ETH, SOL, BNB, XRP, DOGE, ADA, AVAX, DOT, POL, NEAR, SUI, ARB, LTC, INJ, RENDER, LINK, DASH | Supported trading pairs |
 | `INITIAL_CAPITAL` | `1000.0` | Starting portfolio value |
 | `TRADING_FEE_RATE` | `0.001` (0.1%) | Fee per trade |
 | `LEVERAGE_OPTIONS` | 1, 2, 3, 5, 10, 20 | Available leverage levels |

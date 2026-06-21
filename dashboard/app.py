@@ -21,9 +21,12 @@ from strategy.loader import get_all_strategy_names, build_strategy
 def fetch_candles(symbol: str, interval: str, limit: int = 500) -> list[dict]:
     candles = get_candles(symbol, interval, limit=limit)
     if not candles:
-        feed = DataFeed(symbol=symbol, interval=interval)
-        feed.fetch_historical(limit=limit)
-        candles = get_candles(symbol, interval, limit=limit)
+        try:
+            feed = DataFeed(symbol=symbol, interval=interval)
+            feed.fetch_historical(limit=limit)
+            candles = get_candles(symbol, interval, limit=limit)
+        except Exception:
+            pass
     return candles
 
 init_db()
