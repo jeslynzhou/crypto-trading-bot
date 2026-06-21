@@ -3,6 +3,7 @@
 *.db
 bot.log
 .bot_pid
+.positions.json
 __pycache__/
 *.pyc
 .DS_Store

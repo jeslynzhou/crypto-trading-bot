@@ -108,7 +108,7 @@ def get_candles(symbol: str, interval: str, limit: int = 500,
         query += " AND open_time <= ?"
         params.append(end_time)
 
-    query += " ORDER BY open_time ASC LIMIT ?"
+    query = f"SELECT * FROM ({query} ORDER BY open_time DESC LIMIT ?) ORDER BY open_time ASC"
     params.append(limit)
 
     rows = conn.execute(query, params).fetchall()

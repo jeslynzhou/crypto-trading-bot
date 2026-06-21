@@ -32,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MIN_CONFIDENCE = 0.3
+POSITIONS_FILE = os.path.join(os.path.dirname(__file__), ".positions.json")
 
 
 class BotRunner:
@@ -68,6 +69,19 @@ class BotRunner:
             logger.info("[%s] %s: %s", symbol, strategy.name, sig)
             self._handle_signal(symbol, sig, strategy.name)
 
+    def _save_positions(self):
+        data = {}
+        for key, pos in self.positions.items():
+            data[key] = {
+                "symbol": key.split("_")[0],
+                "strategy": "_".join(key.split("_")[1:]),
+                "entry_price": pos["entry_price"],
+                "quantity": pos["quantity"],
+                "side": pos["side"],
+            }
+        with open(POSITIONS_FILE, "w") as f:
+            json.dump(data, f)
+
     def _open_position(self, symbol, sig, strategy_name, side):
         executor = self.executors[symbol]
         pos_key = f"{symbol}_{strategy_name}"
@@ -85,6 +99,7 @@ class BotRunner:
             self.positions[pos_key] = {
                 "entry_price": sig.price, "quantity": quantity, "side": side,
             }
+            self._save_positions()
             logger.info("[%s] Opened %s: qty=%.6f @ %.2f", symbol, side, quantity, sig.price)
 
     def _close_position(self, symbol, pos, price, strategy_name, reason):
@@ -102,6 +117,7 @@ class BotRunner:
         )
         if result:
             del self.positions[pos_key]
+            self._save_positions()
             logger.info("[%s] Closed %s: pnl=%.4f", symbol, pos["side"], pnl)
             return True
         return False

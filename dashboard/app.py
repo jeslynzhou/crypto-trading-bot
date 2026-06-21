@@ -18,16 +18,24 @@ from data.prices import get_binance_24h_stats
 from strategy.loader import get_all_strategy_names, build_strategy
 
 
+@st.cache_data(ttl=30)
 def fetch_candles(symbol: str, interval: str, limit: int = 500) -> list[dict]:
-    candles = get_candles(symbol, interval, limit=limit)
-    if not candles:
-        try:
-            feed = DataFeed(symbol=symbol, interval=interval)
-            feed.fetch_historical(limit=limit)
-            candles = get_candles(symbol, interval, limit=limit)
-        except Exception:
-            pass
-    return candles
+    try:
+        feed = DataFeed(symbol=symbol, interval=interval)
+        feed.fetch_historical(limit=limit)
+    except Exception:
+        pass
+    return get_candles(symbol, interval, limit=limit)
+
+
+@st.cache_data(ttl=10)
+def cached_24h_stats(symbols: tuple) -> dict:
+    return get_binance_24h_stats(list(symbols))
+
+
+@st.cache_data(ttl=60)
+def cached_strategy_names() -> list[str]:
+    return get_all_strategy_names()
 
 init_db()
 
@@ -36,8 +44,33 @@ st.title("Crypto Trading Bot")
 
 BOT_PID_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".bot_pid")
 BOT_LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot.log")
+POSITIONS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".positions.json")
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "strategy", "custom")
 TEMPLATE_PATH = os.path.join(CUSTOM_DIR, "_template.py")
+
+
+def get_open_positions() -> dict:
+    if not os.path.exists(POSITIONS_FILE):
+        return {}
+    try:
+        with open(POSITIONS_FILE) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def calc_unrealized_pnl(positions: dict, prices: dict) -> float:
+    total = 0.0
+    for pos in positions.values():
+        sym = pos["symbol"]
+        current_price = prices.get(sym, 0)
+        if current_price <= 0:
+            continue
+        if pos["side"] == "LONG":
+            total += (current_price - pos["entry_price"]) * pos["quantity"]
+        else:
+            total += (pos["entry_price"] - current_price) * pos["quantity"]
+    return total
 
 
 def is_bot_running() -> bool:
@@ -80,15 +113,27 @@ def stop_bot():
     os.remove(BOT_PID_FILE)
 
 
-all_strat_names = get_all_strategy_names()
+all_strat_names = cached_strategy_names()
 
-tab_markets, tab_trading, tab_backtest, tab_editor = st.tabs([
-    "Markets", "Trading", "Backtest", "Strategy Editor",
-])
+TAB_NAMES = ["Markets", "Trading", "Backtest", "Strategy Editor"]
+params = st.query_params
+active_tab = params.get("tab", "Markets")
+if active_tab not in TAB_NAMES:
+    active_tab = "Markets"
+
+cols = st.columns(len(TAB_NAMES))
+for i, tab_name in enumerate(TAB_NAMES):
+    with cols[i]:
+        btn_type = "primary" if active_tab == tab_name else "secondary"
+        if st.button(tab_name, key=f"nav_{tab_name}", use_container_width=True, type=btn_type):
+            st.query_params["tab"] = tab_name
+            st.rerun()
+
+st.divider()
 
 # ── Markets ──
 
-with tab_markets:
+if active_tab == "Markets":
     col_sym, col_tf = st.columns([3, 1])
     with col_sym:
         selected = st.selectbox("Symbol", SYMBOLS,
@@ -96,7 +141,7 @@ with tab_markets:
     with col_tf:
         timeframe = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h"])
 
-    stats = get_binance_24h_stats(SYMBOLS)
+    stats = cached_24h_stats(tuple(SYMBOLS))
     if stats:
         per_row = 6
         for row_start in range(0, len(SYMBOLS), per_row):
@@ -186,7 +231,7 @@ with tab_markets:
 
 # ── Trading ──
 
-with tab_trading:
+if active_tab == "Trading":
 
     # ── Bot Controls ──
     st.subheader("Bot Controls")
@@ -210,6 +255,7 @@ with tab_trading:
     btn_col1, btn_col2, btn_col3, status_col = st.columns([1, 1, 1, 2])
     with btn_col1:
         if st.button("Start Bot", disabled=running, type="primary"):
+            stop_bot()
             start_bot([bot_symbol], bot_strats, bot_leverage, bot_interval)
             st.rerun()
     with btn_col2:
@@ -220,6 +266,8 @@ with tab_trading:
         if st.button("Reset Portfolio", disabled=running):
             stop_bot()
             clear_trades()
+            if os.path.exists(POSITIONS_FILE):
+                os.remove(POSITIONS_FILE)
             st.rerun()
     with status_col:
         if running:
@@ -230,16 +278,47 @@ with tab_trading:
     st.divider()
 
     # ── P&L ──
-    col1, col2, col3 = st.columns(3)
-    portfolio_value = get_portfolio_value()
     all_trades = get_trades(limit=5000)
     total_pnl = sum(t["pnl"] for t in all_trades)
     total_fees = sum(t.get("fee", 0) for t in all_trades)
-    net_pnl = total_pnl - total_fees
+    realized_pnl = total_pnl - total_fees
 
-    col1.metric("Portfolio", f"${portfolio_value:,.2f}")
-    col2.metric("Net P&L", f"${net_pnl:,.2f}", delta=f"{net_pnl:+,.2f}")
-    col3.metric("Fees Paid", f"${total_fees:,.2f}")
+    open_positions = get_open_positions()
+    unrealized = 0.0
+    if open_positions and running:
+        price_stats = cached_24h_stats(tuple(SYMBOLS))
+        current_prices = {s: d.get("price", 0) for s, d in price_stats.items()} if price_stats else {}
+        unrealized = calc_unrealized_pnl(open_positions, current_prices)
+
+    portfolio_value = INITIAL_CAPITAL + realized_pnl + unrealized
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Portfolio", f"${portfolio_value:,.2f}", delta=f"{realized_pnl + unrealized:+,.2f}")
+    col2.metric("Realized P&L", f"${realized_pnl:,.2f}")
+    col3.metric("Unrealized P&L", f"${unrealized:,.2f}",
+                delta=f"{unrealized:+,.2f}" if unrealized != 0 else None)
+    col4.metric("Fees Paid", f"${total_fees:,.2f}")
+
+    if open_positions and running:
+        with st.expander(f"Open Positions ({len(open_positions)})", expanded=True):
+            pos_data = []
+            for key, pos in open_positions.items():
+                sym = pos["symbol"]
+                cur_price = current_prices.get(sym, 0)
+                if pos["side"] == "LONG":
+                    pos_pnl = (cur_price - pos["entry_price"]) * pos["quantity"]
+                else:
+                    pos_pnl = (pos["entry_price"] - cur_price) * pos["quantity"]
+                pos_data.append({
+                    "Symbol": sym.replace("USDT", "/USDT"),
+                    "Strategy": pos["strategy"],
+                    "Side": pos["side"],
+                    "Entry": f"${pos['entry_price']:,.2f}",
+                    "Current": f"${cur_price:,.2f}" if cur_price > 0 else "—",
+                    "Qty": f"{pos['quantity']:.6f}",
+                    "P&L": f"${pos_pnl:,.2f}",
+                })
+            st.dataframe(pd.DataFrame(pos_data), use_container_width=True, hide_index=True)
 
     # ── Price Chart ──
     show_price = st.toggle("Show Price Chart", value=True, key="show_price")
@@ -400,7 +479,7 @@ with tab_trading:
 
 # ── Backtest ──
 
-with tab_backtest:
+if active_tab == "Backtest":
     st.header("Backtest")
 
     col_left, col_right = st.columns([1, 2])
@@ -489,65 +568,95 @@ with tab_backtest:
 
 # ── Strategy Editor ──
 
-with tab_editor:
-    st.header("Strategy Editor")
-    st.caption("Write your own strategy in Python. Saved strategies auto-appear in strategy selectors.")
+if active_tab == "Strategy Editor":
+    if "editor_mode" not in st.session_state:
+        st.session_state.editor_mode = "new"
+        st.session_state.editor_file = ""
 
-    existing_custom = [f[:-3] for f in os.listdir(CUSTOM_DIR)
-                       if f.endswith(".py") and not f.startswith("_")]
+    existing_custom = sorted([f[:-3] for f in os.listdir(CUSTOM_DIR)
+                              if f.endswith(".py") and not f.startswith("_")])
 
-    col_name, col_load = st.columns([2, 1])
-    with col_name:
-        strat_filename = st.text_input("Strategy filename (no .py)", value="my_strategy",
-                                       key="editor_name")
-    with col_load:
-        load_existing = st.selectbox("Load existing", ["(new)"] + existing_custom,
-                                     key="editor_load")
+    col_sidebar, col_editor = st.columns([1, 4])
 
-    template_code = ""
-    if load_existing != "(new)":
-        filepath = os.path.join(CUSTOM_DIR, f"{load_existing}.py")
-        if os.path.exists(filepath):
-            with open(filepath) as f:
-                template_code = f.read()
-    else:
-        if os.path.exists(TEMPLATE_PATH):
-            with open(TEMPLATE_PATH) as f:
-                template_code = f.read()
+    with col_sidebar:
+        if st.button("+ New", use_container_width=True, type="primary"):
+            st.session_state.editor_mode = "new"
+            st.session_state.editor_file = ""
+            st.rerun()
 
-    code = st.text_area("Strategy Code", value=template_code, height=500,
-                        key="editor_code")
+        for name in existing_custom:
+            is_active = st.session_state.editor_mode == "edit" and st.session_state.editor_file == name
+            btn_type = "primary" if is_active else "secondary"
+            col_btn, col_x = st.columns([5, 1])
+            with col_btn:
+                if st.button(name, key=f"strat_btn_{name}",
+                             use_container_width=True, type=btn_type):
+                    st.session_state.editor_mode = "edit"
+                    st.session_state.editor_file = name
+                    st.rerun()
+            with col_x:
+                if st.button("x", key=f"strat_del_{name}"):
+                    filepath = os.path.join(CUSTOM_DIR, f"{name}.py")
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                        st.toast(f"Deleted {name}.py")
+                    if st.session_state.editor_file == name:
+                        st.session_state.editor_mode = "new"
+                        st.session_state.editor_file = ""
+                    st.rerun()
 
-    col_save, col_del, col_status = st.columns([1, 1, 2])
-    with col_save:
-        if st.button("Save Strategy", type="primary"):
-            if not strat_filename.strip():
-                st.error("Enter a filename.")
+        if not existing_custom:
+            st.caption("No custom strategies yet.")
+
+    with col_editor:
+        if st.session_state.editor_mode == "edit" and st.session_state.editor_file:
+            filepath = os.path.join(CUSTOM_DIR, f"{st.session_state.editor_file}.py")
+            if os.path.exists(filepath):
+                with open(filepath) as f:
+                    default_code = f.read()
             else:
-                filepath = os.path.join(CUSTOM_DIR, f"{strat_filename}.py")
-                try:
-                    compile(code, filepath, "exec")
-                    with open(filepath, "w") as f:
-                        f.write(code)
-                    st.success(f"Saved to strategy/custom/{strat_filename}.py")
-                    st.rerun()
-                except SyntaxError as e:
-                    st.error(f"Syntax error on line {e.lineno}: {e.msg}")
+                default_code = ""
+            default_name = st.session_state.editor_file
+            st.subheader(f"Editing: {default_name}.py")
+        else:
+            if os.path.exists(TEMPLATE_PATH):
+                with open(TEMPLATE_PATH) as f:
+                    default_code = f.read()
+            else:
+                default_code = ""
+            default_name = ""
+            st.subheader("New Strategy")
 
-    with col_del:
-        if load_existing != "(new)":
-            if st.button("Delete Strategy"):
-                filepath = os.path.join(CUSTOM_DIR, f"{load_existing}.py")
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-                    st.success(f"Deleted {load_existing}.py")
-                    st.rerun()
+        strat_filename = st.text_input(
+            "Filename (without .py)", value=default_name,
+            key=f"ed_name_{st.session_state.editor_mode}_{st.session_state.editor_file}",
+            placeholder="my_strategy")
 
-    with col_status:
+        code = st.text_area(
+            "Code", value=default_code, height=450,
+            key=f"ed_code_{st.session_state.editor_mode}_{st.session_state.editor_file}")
+
         if code:
             try:
                 compile(code, "<editor>", "exec")
                 st.success("Syntax OK")
             except SyntaxError as e:
-                st.error(f"Line {e.lineno}: {e.msg}")
+                st.error(f"Syntax error on line {e.lineno}: {e.msg}")
+
+        if st.button("Save", type="primary"):
+            name = strat_filename.strip()
+            if not name:
+                st.error("Enter a filename.")
+            else:
+                filepath = os.path.join(CUSTOM_DIR, f"{name}.py")
+                try:
+                    compile(code, filepath, "exec")
+                    with open(filepath, "w") as f:
+                        f.write(code)
+                    st.toast(f"Saved {name}.py")
+                    st.session_state.editor_mode = "edit"
+                    st.session_state.editor_file = name
+                    st.rerun()
+                except SyntaxError as e:
+                    st.error(f"Syntax error on line {e.lineno}: {e.msg}")
 

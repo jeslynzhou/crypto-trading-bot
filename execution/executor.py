@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
+import math
+
 import requests
 
 from config import TRADING_FEE_RATE
@@ -26,6 +28,24 @@ class BinanceTestnetExecutor:
         self.fee_rate = TRADING_FEE_RATE
         self._session = requests.Session()
         self._session.headers.update({"X-MBX-APIKEY": self.api_key})
+        self._step_size = self._fetch_step_size()
+
+    def _fetch_step_size(self) -> float:
+        try:
+            resp = self._session.get(
+                f"{TESTNET_BASE_URL}/exchangeInfo",
+                params={"symbol": self.symbol}, timeout=10)
+            resp.raise_for_status()
+            for f in resp.json()["symbols"][0]["filters"]:
+                if f["filterType"] == "LOT_SIZE":
+                    return float(f["stepSize"])
+        except Exception as e:
+            logger.warning("Failed to fetch step size for %s: %s", self.symbol, e)
+        return 0.00001
+
+    def _round_qty(self, qty: float) -> float:
+        precision = max(0, round(-math.log10(self._step_size)))
+        return math.floor(qty * 10**precision) / 10**precision
 
     def _sign(self, params: dict) -> str:
         query_string = urlencode(params)
@@ -59,11 +79,16 @@ class BinanceTestnetExecutor:
                     reason: str, order_type: str = "MARKET",
                     price: Optional[float] = None,
                     pnl: float = 0.0) -> Optional[dict]:
+        quantity = self._round_qty(quantity)
+        if quantity <= 0:
+            logger.warning("Quantity too small after rounding for %s", self.symbol)
+            return None
+        precision = max(0, round(-math.log10(self._step_size)))
         params = {
             "symbol": self.symbol,
             "side": side.upper(),
             "type": order_type,
-            "quantity": f"{int(quantity * 100000) / 100000:.5f}",
+            "quantity": f"{quantity:.{precision}f}",
         }
 
         if order_type == "LIMIT" and price is not None:
