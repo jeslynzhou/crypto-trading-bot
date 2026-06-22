@@ -17,7 +17,8 @@ from config import SYMBOLS, STRATEGIES, STRATEGY_NAMES, LEVERAGE_OPTIONS, TRADIN
 from data.storage import get_trades, get_candles, get_portfolio_value, clear_trades, init_db
 from data.feed import DataFeed
 from data.prices import get_prices, get_24h_stats
-from strategy.loader import get_all_strategy_names, build_strategy
+import inspect
+from strategy.loader import get_all_strategy_names, get_all_strategy_classes, build_strategy
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 TEMPLATE_PATH = os.path.join(PROJECT_ROOT, "strategy", "custom", "_template.py")
@@ -660,14 +661,31 @@ if active_tab == "Backtest":
     with col_right:
         st.subheader("Customize Parameters")
         custom_params = {}
+        all_classes = get_all_strategy_classes(user_dir)
         for sname in bt_strategies:
-            info = STRATEGIES.get(sname, {})
-            defaults = info.get("params", {})
-            desc = info.get("description", sname)
+            config_info = STRATEGIES.get(sname, {})
+            desc = config_info.get("description", sname)
+
+            defaults = {}
+            cls = all_classes.get(sname)
+            if cls:
+                sig = inspect.signature(cls.__init__)
+                for pname, param in sig.parameters.items():
+                    if pname == "self":
+                        continue
+                    if param.default is not inspect.Parameter.empty:
+                        defaults[pname] = param.default
+
+            if config_info.get("params"):
+                defaults.update(config_info["params"])
+
             with st.expander(f"{sname} — {desc}", expanded=False):
                 bt_params = {}
                 for pname, default in defaults.items():
-                    if isinstance(default, float):
+                    if isinstance(default, bool):
+                        bt_params[pname] = st.checkbox(
+                            pname, value=default, key=f"p_{sname}_{pname}")
+                    elif isinstance(default, float):
                         bt_params[pname] = st.number_input(
                             pname, value=default, step=0.1, format="%.1f",
                             key=f"p_{sname}_{pname}")

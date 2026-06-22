@@ -184,15 +184,25 @@ class Backtester:
 
             sig = self.strategy.generate_signal()
 
-            if sig.signal == Signal.BUY and position is None:
-                position, capital, total_fees = self._open_position(
-                    "LONG", price, capital, sig.reason, result, total_fees)
-                highest_since_entry = price
+            if sig.signal == Signal.BUY:
+                if position and position["side"] == "SHORT":
+                    capital, total_fees = self._close_position(
+                        position, price, sig.reason, result, total_fees, capital)
+                    position = None
+                elif position is None:
+                    position, capital, total_fees = self._open_position(
+                        "LONG", price, capital, sig.reason, result, total_fees)
+                    highest_since_entry = price
 
-            elif sig.signal == Signal.SELL and position is not None:
-                capital, total_fees = self._close_position(
-                    position, price, sig.reason, result, total_fees, capital)
-                position = None
+            elif sig.signal == Signal.SELL:
+                if position and position["side"] == "LONG":
+                    capital, total_fees = self._close_position(
+                        position, price, sig.reason, result, total_fees, capital)
+                    position = None
+                elif position is None:
+                    position, capital, total_fees = self._open_position(
+                        "SHORT", price, capital, sig.reason, result, total_fees)
+                    lowest_since_entry = price
 
             unrealized = 0.0
             if position:

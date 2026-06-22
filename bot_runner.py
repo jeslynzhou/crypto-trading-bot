@@ -44,6 +44,9 @@ class BotRunner:
         self.feeds = {}
         self.positions = {}
 
+        base_username = user_id.rsplit("_", 1)[0] if "_" in user_id else user_id
+        user_dir = os.path.join(os.path.dirname(__file__), "strategy", "custom", base_username)
+
         for sym in symbols:
             if mode == "live" and hl_private_key:
                 self.executors[sym] = HyperliquidExecutor(
@@ -54,7 +57,7 @@ class BotRunner:
                 self.executors[sym] = PaperExecutor(
                     symbol=sym, leverage=leverage, user_id=user_id,
                 )
-            self.strategies[sym] = [build_strategy(name) for name in strategy_names]
+            self.strategies[sym] = [build_strategy(name, user_dir=user_dir) for name in strategy_names]
             self.feeds[sym] = DataFeed(symbol=sym, interval=interval, mode="live")
 
     def _on_candle(self, symbol, candle):
@@ -126,11 +129,17 @@ class BotRunner:
         pos = self.positions.get(pos_key)
         price = sig.price if sig.price > 0 else (pos["entry_price"] if pos else 0)
 
-        if sig.signal == Signal.BUY and pos is None:
-            self._open_position(symbol, sig, strategy_name, "LONG")
+        if sig.signal == Signal.BUY:
+            if pos and pos["side"] == "SHORT":
+                self._close_position(symbol, pos, price, strategy_name, sig.reason)
+            elif pos is None:
+                self._open_position(symbol, sig, strategy_name, "LONG")
 
-        elif sig.signal == Signal.SELL and pos is not None:
-            self._close_position(symbol, pos, price, strategy_name, sig.reason)
+        elif sig.signal == Signal.SELL:
+            if pos and pos["side"] == "LONG":
+                self._close_position(symbol, pos, price, strategy_name, sig.reason)
+            elif pos is None:
+                self._open_position(symbol, sig, strategy_name, "SHORT")
 
     def run(self):
         init_db()
