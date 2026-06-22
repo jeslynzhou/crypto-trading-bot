@@ -14,7 +14,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from config import SYMBOLS, STRATEGIES, STRATEGY_NAMES, LEVERAGE_OPTIONS, TRADING_FEE_RATE, INITIAL_CAPITAL
-from data.storage import get_trades, get_candles, get_portfolio_value, clear_trades, init_db
+from data.storage import (get_trades, get_candles, get_portfolio_value, clear_trades, init_db,
+                          save_user_strategy, get_user_strategies, get_user_strategy, delete_user_strategy)
 from data.feed import DataFeed
 from data.prices import get_prices, get_24h_stats
 import inspect
@@ -41,8 +42,8 @@ def cached_prices(symbols: tuple) -> dict:
 
 
 @st.cache_data(ttl=60)
-def cached_strategy_names(user_dir: str = "") -> list[str]:
-    return get_all_strategy_names(user_dir if user_dir else None)
+def cached_strategy_names(user_id: str = "") -> list[str]:
+    return get_all_strategy_names(user_id if user_id else None)
 
 
 @st.cache_data(ttl=10)
@@ -97,12 +98,6 @@ def user_log_file(username):
 
 def user_positions_file(username):
     return os.path.join(PROJECT_ROOT, f".positions_{username}.json")
-
-
-def user_custom_dir(username):
-    d = os.path.join(PROJECT_ROOT, "strategy", "custom", username)
-    os.makedirs(d, exist_ok=True)
-    return d
 
 
 def get_open_positions(username):
@@ -219,8 +214,7 @@ if st.session_state.get("authentication_status") is None or st.session_state.get
 
 # ── Authenticated ──
 username = st.session_state["username"]
-user_dir = user_custom_dir(username)
-all_strat_names = cached_strategy_names(user_dir)
+all_strat_names = cached_strategy_names(username)
 
 st.title("Velox")
 with st.sidebar:
@@ -352,12 +346,16 @@ if active_tab == "Trading":
     bot_mode = st.radio("Mode", ["Paper", "Live"], horizontal=True, key="bot_mode")
 
     hl_address = ""
-    hl_key = os.environ.get("HL_PRIVATE_KEY", "")
+    hl_key = ""
     if bot_mode == "Live":
         hl_address = st.text_input("Wallet Address (public, for viewing portfolio)",
                                    key="hl_address", placeholder="0x...")
-        if not hl_key:
-            st.info("To trade live, add `HL_PRIVATE_KEY=0x...` to your `.env` file. Your wallet address above is only used to view your portfolio.")
+        hl_key = st.text_input("Private Key (for trading, session-only — never stored)",
+                               type="password", key="hl_key", placeholder="0x...")
+        if hl_key:
+            st.caption("Key is held in memory only. It will be forgotten when you log out.")
+        else:
+            st.info("Enter your private key to enable live trading. It's never saved to disk — session only.")
 
     user_key = f"{username}_{bot_mode.lower()}"
 
@@ -661,7 +659,7 @@ if active_tab == "Backtest":
     with col_right:
         st.subheader("Customize Parameters")
         custom_params = {}
-        all_classes = get_all_strategy_classes(user_dir)
+        all_classes = get_all_strategy_classes(username)
         for sname in bt_strategies:
             config_info = STRATEGIES.get(sname, {})
             desc = config_info.get("description", sname)
@@ -703,7 +701,7 @@ if active_tab == "Backtest":
         for i, sname in enumerate(bt_strategies):
             with st.spinner(f"Running {sname}..."):
                 p = custom_params.get(sname, {})
-                strat = build_strategy(sname, p if p else None, user_dir=user_dir)
+                strat = build_strategy(sname, p if p else None, user_id=username)
                 bt = Backtester(strat, symbol=bt_symbol, interval=bt_interval,
                                 fee_rate=TRADING_FEE_RATE, leverage=bt_leverage)
                 results[sname] = bt.run()
@@ -754,8 +752,8 @@ if active_tab == "Strategy Editor":
         st.session_state.editor_mode = "new"
         st.session_state.editor_file = ""
 
-    existing_custom = sorted([f[:-3] for f in os.listdir(user_dir)
-                              if f.endswith(".py") and not f.startswith("_")])
+    db_strategies = get_user_strategies(username)
+    existing_custom = [s["name"] for s in db_strategies]
 
     col_sidebar, col_editor = st.columns([1, 4])
 
@@ -777,10 +775,8 @@ if active_tab == "Strategy Editor":
                     st.rerun()
             with col_x:
                 if st.button("x", key=f"strat_del_{name}"):
-                    filepath = os.path.join(user_dir, f"{name}.py")
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-                        st.toast(f"Deleted {name}.py")
+                    delete_user_strategy(username, name)
+                    st.toast(f"Deleted {name}")
                     if st.session_state.editor_file == name:
                         st.session_state.editor_mode = "new"
                         st.session_state.editor_file = ""
@@ -791,14 +787,9 @@ if active_tab == "Strategy Editor":
 
     with col_editor:
         if st.session_state.editor_mode == "edit" and st.session_state.editor_file:
-            filepath = os.path.join(user_dir, f"{st.session_state.editor_file}.py")
-            if os.path.exists(filepath):
-                with open(filepath) as f:
-                    default_code = f.read()
-            else:
-                default_code = ""
+            default_code = get_user_strategy(username, st.session_state.editor_file) or ""
             default_name = st.session_state.editor_file
-            st.subheader(f"Editing: {default_name}.py")
+            st.subheader(f"Editing: {default_name}")
         else:
             if os.path.exists(TEMPLATE_PATH):
                 with open(TEMPLATE_PATH) as f:
@@ -809,7 +800,7 @@ if active_tab == "Strategy Editor":
             st.subheader("New Strategy")
 
         strat_filename = st.text_input(
-            "Filename (without .py)", value=default_name,
+            "Strategy name", value=default_name,
             key=f"ed_name_{st.session_state.editor_mode}_{st.session_state.editor_file}",
             placeholder="my_strategy")
 
@@ -827,14 +818,12 @@ if active_tab == "Strategy Editor":
         if st.button("Save", type="primary"):
             name = strat_filename.strip()
             if not name:
-                st.error("Enter a filename.")
+                st.error("Enter a strategy name.")
             else:
-                filepath = os.path.join(user_dir, f"{name}.py")
                 try:
-                    compile(code, filepath, "exec")
-                    with open(filepath, "w") as f:
-                        f.write(code)
-                    st.toast(f"Saved {name}.py")
+                    compile(code, name, "exec")
+                    save_user_strategy(username, name, code)
+                    st.toast(f"Saved {name}")
                     st.session_state.editor_mode = "edit"
                     st.session_state.editor_file = name
                     st.rerun()

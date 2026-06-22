@@ -58,6 +58,16 @@ def init_db(db_path: str = DB_PATH):
             ON trades(strategy_name);
         CREATE INDEX IF NOT EXISTS idx_trades_symbol
             ON trades(symbol);
+
+        CREATE TABLE IF NOT EXISTS user_strategies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            code TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, name)
+        );
     """)
     _migrate_trades_table(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id)")
@@ -219,3 +229,43 @@ def get_daily_pnl(date: Optional[str] = None, user_id: Optional[str] = None,
     row = conn.execute(query, params).fetchone()
     conn.close()
     return row["daily_pnl"]
+
+
+# ── User Strategies ──
+
+def save_user_strategy(user_id: str, name: str, code: str, db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    conn.execute("""
+        INSERT INTO user_strategies (user_id, name, code, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(user_id, name) DO UPDATE SET code=excluded.code, updated_at=datetime('now')
+    """, (user_id, name, code))
+    conn.commit()
+    conn.close()
+
+
+def get_user_strategies(user_id: str, db_path: str = DB_PATH) -> list[dict]:
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT name, code FROM user_strategies WHERE user_id = ? ORDER BY name",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_user_strategy(user_id: str, name: str, db_path: str = DB_PATH) -> Optional[str]:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT code FROM user_strategies WHERE user_id = ? AND name = ?",
+        (user_id, name)
+    ).fetchone()
+    conn.close()
+    return row["code"] if row else None
+
+
+def delete_user_strategy(user_id: str, name: str, db_path: str = DB_PATH):
+    conn = get_connection(db_path)
+    conn.execute("DELETE FROM user_strategies WHERE user_id = ? AND name = ?", (user_id, name))
+    conn.commit()
+    conn.close()

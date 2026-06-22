@@ -45,7 +45,6 @@ class BotRunner:
         self.positions = {}
 
         base_username = user_id.rsplit("_", 1)[0] if "_" in user_id else user_id
-        user_dir = os.path.join(os.path.dirname(__file__), "strategy", "custom", base_username)
 
         for sym in symbols:
             if mode == "live" and hl_private_key:
@@ -57,7 +56,7 @@ class BotRunner:
                 self.executors[sym] = PaperExecutor(
                     symbol=sym, leverage=leverage, user_id=user_id,
                 )
-            self.strategies[sym] = [build_strategy(name, user_dir=user_dir) for name in strategy_names]
+            self.strategies[sym] = [build_strategy(name, user_id=base_username) for name in strategy_names]
             self.feeds[sym] = DataFeed(symbol=sym, interval=interval, mode="live")
 
     def _on_candle(self, symbol, candle):
